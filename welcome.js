@@ -2,6 +2,7 @@
 // welcome.js
 // ALJESAT BOT
 // نظام رسالة الترحيب مع الصورة والروابط
+// نسخة محدّثة: إصلاح المنشن (LID support)
 // ============================================================
 
 "use strict";
@@ -9,23 +10,38 @@
 const fs = require("fs");
 const path = require("path");
 
+// ⭐ استيراد دوال LID
+const { cleanNumber, buildSafeMention } = require("./bot");
+
 // ============================================================
 // أدوات مساعدة
 // ============================================================
 
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/[^0-9]/g, "");
-}
-
+/**
+ * ⭐ بناء منشن آمن (يدعم LID و PN)
+ */
 function safeNumber(num) {
     const clean = cleanNumber(num);
     if (!clean) return "";
-    return `@${clean}`;
+
+    // إذا كان JID صحيح، استخدمه كما هو
+    if (typeof num === "string" && num.includes("@")) {
+        return buildSafeMention(num) || `${clean}@s.whatsapp.net`;
+    }
+
+    return `${clean}@s.whatsapp.net`;
+}
+
+/**
+ * استخراج الرقم الصافي من أي مصدر
+ */
+function extractNumber(source) {
+    if (!source) return "";
+    return cleanNumber(String(source).split("@")[0]);
 }
 
 function getWelcomeMessage(nickname, userNumber, db) {
-    // جلب الروابط من قاعدة البيانات
+    // جلب الروابط
     let link1 = "الرابط 1";
     let link2 = "الرابط 2";
 
@@ -41,7 +57,7 @@ function getWelcomeMessage(nickname, userNumber, db) {
     } catch (_) {}
 
     const safeNickname = nickname && String(nickname).trim() ? nickname : "غير مسجل";
-    const mention = safeNumber(userNumber);
+    const cleanNum = extractNumber(userNumber);
 
     return `╮─❖『 👑 ترحيب 』❖─╭
 
@@ -51,7 +67,8 @@ function getWelcomeMessage(nickname, userNumber, db) {
 
 _*آلَــلـقــــــب:*_    ┊ ${safeNickname} ┊
 
-_*آلَمِــــنـــــشــــن:*_  ┊ ${mention} ┊
+_*آلَمِــــنـــــشــــن:*_
+  ┊ @${cleanNum} ┊
 
 \`الدخول اجباري لهنا:\`
 ╮──────────────╭
@@ -67,26 +84,28 @@ _*آلَمِــــنـــــشــــن:*_  ┊ ${mention} ┊
 ╯──────────────╰`;
 }
 
-/**
- * إرسال رسالة الترحيب مع الصورة
- * @param {Object} sock - Socket
- * @param {String} jid - معرف القروب الأساسي
- * @param {String} userNumber - رقم العضو
- * @param {Object} photoEntry - كائن الصورة من db.userPhotos
- * @param {Object} db - قاعدة البيانات
- */
+// ============================================================
+// ⭐ إرسال رسالة الترحيب (مع إصلاح المنشن)
+// ============================================================
+
 async function sendWelcome(sock, jid, userNumber, photoEntry, db) {
     try {
-        if (!sock || !jid || !userNumber || !photoEntry) {
+        if (!sock || !jid || !userNumber) {
             console.warn("⚠️ sendWelcome: بيانات ناقصة");
             return false;
         }
 
-        const cleanNum = cleanNumber(userNumber);
-        const mentionJid = `${cleanNum}@s.whatsapp.net`;
+        const cleanNum = extractNumber(userNumber);
+        if (!cleanNum) {
+            console.warn("⚠️ sendWelcome: رقم غير صالح:", userNumber);
+            return false;
+        }
 
-        // جلب اللقب من الصورة أو من db.users
-        let nickname = photoEntry.nickname;
+        // ⭐ منشن صحيح
+        const mentionJid = buildSafeMention(userNumber) || `${cleanNum}@s.whatsapp.net`;
+
+        // جلب اللقب
+        let nickname = photoEntry?.nickname || "";
         if (!nickname || !String(nickname).trim()) {
             const user = db && db.users ? db.users[cleanNum] : null;
             nickname = user?.nickname || "";
@@ -94,8 +113,8 @@ async function sendWelcome(sock, jid, userNumber, photoEntry, db) {
 
         const welcomeText = getWelcomeMessage(nickname, cleanNum, db);
 
-        // التحقق من وجود ملف الصورة
-        const filePath = photoEntry.filePath;
+        // فحص ملف الصورة
+        const filePath = photoEntry?.filePath;
         const fileExists = filePath && fs.existsSync(filePath);
 
         if (fileExists) {
@@ -109,8 +128,8 @@ async function sendWelcome(sock, jid, userNumber, photoEntry, db) {
                 console.log(`✅ تم إرسال ترحيب بالصورة للعضو ${cleanNum}`);
                 return true;
             } catch (err) {
-                console.error("❌ فشل إرسال الصورة في الترحيب:", err?.message);
-                // fallback: إرسال النص فقط
+                console.error("❌ فشل إرسال الصورة:", err?.message);
+                // fallback: نص فقط
                 await sock.sendMessage(jid, {
                     text: welcomeText,
                     mentions: [mentionJid]
@@ -119,7 +138,7 @@ async function sendWelcome(sock, jid, userNumber, photoEntry, db) {
             }
         }
 
-        // لا توجد صورة: إرسال النص فقط
+        // بدون صورة
         await sock.sendMessage(jid, {
             text: welcomeText,
             mentions: [mentionJid]
@@ -134,13 +153,10 @@ async function sendWelcome(sock, jid, userNumber, photoEntry, db) {
     }
 }
 
-/**
- * إرسال رسالة الترحيب النصية فقط (بدون صورة)
- */
 async function sendWelcomeTextOnly(sock, jid, userNumber, nickname, db) {
     try {
-        const cleanNum = cleanNumber(userNumber);
-        const mentionJid = `${cleanNum}@s.whatsapp.net`;
+        const cleanNum = extractNumber(userNumber);
+        const mentionJid = buildSafeMention(userNumber) || `${cleanNum}@s.whatsapp.net`;
         const welcomeText = getWelcomeMessage(nickname, cleanNum, db);
 
         await sock.sendMessage(jid, {
@@ -156,20 +172,15 @@ async function sendWelcomeTextOnly(sock, jid, userNumber, nickname, db) {
     }
 }
 
-/**
- * جلب نص الترحيب فقط (للاختبار)
- */
 function getWelcomeText(nickname, userNumber, db) {
     return getWelcomeMessage(nickname, userNumber, db);
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     sendWelcome,
     sendWelcomeTextOnly,
     getWelcomeText,
-    getWelcomeMessage
+    getWelcomeMessage,
+    safeNumber,
+    extractNumber
 };

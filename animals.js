@@ -1,7 +1,7 @@
 // ============================================================
 // animals.js
 // ALJESAT BOT
-// لعبة الحيوانات - عرض صورة حيوان ويجب كتابة اسمه
+// لعبة الحيوانات - نسخة محدّثة بدعم LID
 // ============================================================
 
 "use strict";
@@ -9,8 +9,11 @@
 const path = require("path");
 const fs = require("fs");
 
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention } = require("./bot");
+
 // ============================================================
-// مراحل التحميل (8 مراحل خلال 8 ثواني)
+// مراحل التحميل
 // ============================================================
 
 const LOADING_STAGES = [
@@ -25,7 +28,7 @@ const LOADING_STAGES = [
 ];
 
 // ============================================================
-// قائمة الحيوانات مع أسمائها ومرادفاتها
+// قائمة الحيوانات
 // ============================================================
 
 const ANIMALS_LIST = [
@@ -89,10 +92,6 @@ if (!fs.existsSync(ANIMALS_FOLDER)) {
     fs.mkdirSync(ANIMALS_FOLDER, { recursive: true });
 }
 
-// ============================================================
-// الحالة النشطة للعبة
-// ============================================================
-
 const activeAnimals = Object.create(null);
 
 // ============================================================
@@ -115,11 +114,6 @@ function normalizeText(text) {
         .replace(/ى/g, "ي")
         .replace(/ة/g, "ه")
         .replace(/\s+/g, " ");
-}
-
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/\D/g, "");
 }
 
 function getUser(db, jid) {
@@ -162,10 +156,7 @@ async function showLoading(sock, jid, msg) {
 
     for (let i = 1; i < LOADING_STAGES.length; i++) {
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await safeSend(sock, jid, {
-            text: LOADING_STAGES[i],
-            edit: loadingMsg.key
-        });
+        await safeSend(sock, jid, { text: LOADING_STAGES[i], edit: loadingMsg.key });
     }
 
     return loadingMsg;
@@ -220,8 +211,14 @@ function getAnimalsTimeout() {
     return "🕰 إنتهى الوقت المحدد 30ث ⌛";
 }
 
+function formatDate(date) {
+    const days = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+    const months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+    return `${days[date.getDay()]} | ${date.getDate()} | ${months[date.getMonth()]}`;
+}
+
 // ============================================================
-// الحصول على مسار صورة الحيوان
+// مسارات الصور
 // ============================================================
 
 function getAnimalImagePath(animalId) {
@@ -229,28 +226,17 @@ function getAnimalImagePath(animalId) {
 }
 
 function animalImageExists(animalId) {
-    const imagePath = getAnimalImagePath(animalId);
-    return fs.existsSync(imagePath);
+    return fs.existsSync(getAnimalImagePath(animalId));
 }
 
 // ============================================================
-// بدء لعبة الحيوانات
+// بدء اللعبة
 // ============================================================
 
-async function handleAnimalsCommand(
-    sock,
-    jid,
-    msg,
-    db,
-    saveDb,
-    cleanSender,
-    isBotOwner
-) {
+async function handleAnimalsCommand(sock, jid, msg, db, saveDb, cleanSender, isBotOwner) {
     try {
         if (activeAnimals[jid]) {
-            await safeSend(sock, jid, {
-                text: "⚠️ هناك فعالية حيوانات قائمة بالفعل في هذه المجموعة!"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ هناك فعالية حيوانات قائمة بالفعل في هذه المجموعة!" }, { quoted: msg });
             return true;
         }
 
@@ -258,24 +244,18 @@ async function handleAnimalsCommand(
         const hasPermission = Boolean(isBotOwner) || db.gamePermissions.includes(cleanSender);
 
         if (!hasPermission) {
-            await safeSend(sock, jid, {
-                text: "⚠️ ليس لديك صلاحية لاستخدام هذا الأمر. يرجى التواصل مع المطور لمنحك الصلاحية."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ ليس لديك صلاحية لاستخدام هذا الأمر." }, { quoted: msg });
             return true;
         }
 
         if (!hasNickname(db, cleanSender)) {
-            await safeSend(sock, jid, {
-                text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل لتتمكن من بدء الفعالية."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل." }, { quoted: msg });
             return true;
         }
 
         const availableAnimals = ANIMALS_LIST.filter(animal => animalImageExists(animal.id));
         if (availableAnimals.length === 0) {
-            await safeSend(sock, jid, {
-                text: "❌ لا توجد صور حيوانات متوفرة. يرجى إضافة الصور إلى مجلد animal_images/"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ لا توجد صور حيوانات متوفرة." }, { quoted: msg });
             return true;
         }
 
@@ -288,9 +268,7 @@ async function handleAnimalsCommand(
             const elapsed = now - previousTime;
             if (elapsed < cooldownTime) {
                 const remainingMin = Math.ceil((cooldownTime - elapsed) / 60000);
-                await safeSend(sock, jid, {
-                    text: `⏳ يرجى الانتظار ${remainingMin} دقائق قبل بدء فعالية جديدة.`
-                }, { quoted: msg });
+                await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق.` }, { quoted: msg });
                 return true;
             }
         }
@@ -313,35 +291,20 @@ async function handleAnimalsCommand(
             totalQuestions: animals.length,
             prizeAmount: 30,
             startTime: new Date(),
-            timers: {
-                inactivity: null,
-                question: null,
-                next: null
-            },
+            timers: { inactivity: null, question: null, next: null },
             listeners: [],
             stopGame: function() {
                 this.isActive = false;
-                if (this.timers.inactivity) {
-                    clearTimeout(this.timers.inactivity);
-                    this.timers.inactivity = null;
-                }
-                if (this.timers.question) {
-                    clearTimeout(this.timers.question);
-                    this.timers.question = null;
-                }
-                if (this.timers.next) {
-                    clearTimeout(this.timers.next);
-                    this.timers.next = null;
-                }
+                if (this.timers.inactivity) { clearTimeout(this.timers.inactivity); this.timers.inactivity = null; }
+                if (this.timers.question) { clearTimeout(this.timers.question); this.timers.question = null; }
+                if (this.timers.next) { clearTimeout(this.timers.next); this.timers.next = null; }
                 delete activeAnimals[jid];
             }
         };
 
         activeAnimals[jid] = gameState;
 
-        await safeSend(sock, jid, {
-            text: getAnimalsStartMessage()
-        }, { quoted: msg });
+        await safeSend(sock, jid, { text: getAnimalsStartMessage() }, { quoted: msg });
 
         setTimeout(async () => {
             if (!gameState.isActive) return;
@@ -364,8 +327,17 @@ async function handleAnimalsCommand(
                 if (!txt) return;
                 if (txt.startsWith(".")) return;
 
-                const userSender = incomingMsg.key?.participant || incomingMsg.key?.remoteJid;
+                // ⭐ استخراج المرسل بدعم LID
+                const userSender =
+                    incomingMsg.key?.participantPn ||
+                    incomingMsg.key?.participant_pn ||
+                    incomingMsg.key?.senderPn ||
+                    incomingMsg.key?.participant ||
+                    incomingMsg.key?.remoteJid;
                 if (!userSender) return;
+
+                const senderNumber = cleanNumber(String(userSender).split("@")[0]);
+                const safeJid = buildSafeMention(userSender) || `${senderNumber}@s.whatsapp.net`;
 
                 gameState.lastActivity = Date.now();
 
@@ -379,44 +351,39 @@ async function handleAnimalsCommand(
 
                     if (isCorrect) {
                         gameState.isWaitingNext = true;
-                        const senderNumber = cleanNumber(userSender);
                         gameState.scores[senderNumber] = (gameState.scores[senderNumber] || 0) + 1;
                         const currentScore = gameState.scores[senderNumber];
 
                         if (currentScore >= 10) {
-                            const winnerClean = cleanNumber(userSender);
-                            const winnerTag = `@${winnerClean}`;
-
                             gameState.stopGame();
 
                             await safeSend(sock, jid, {
-                                text: getAnimalsWinner(winnerClean),
-                                mentions: [userSender]
+                                text: getAnimalsWinner(senderNumber),
+                                mentions: [safeJid]
                             });
 
                             db.users = db.users && typeof db.users === "object" ? db.users : {};
-                            if (db.users[winnerClean]) {
-                                const user = db.users[winnerClean];
+                            if (db.users[senderNumber]) {
+                                const user = db.users[senderNumber];
                                 user.balance = Number(user.balance) || 0;
                                 user.balance += gameState.prizeAmount;
                                 if (typeof saveDb === "function") saveDb();
                             }
 
                             await safeSend(sock, jid, {
-                                text: getAnimalsDeposit(winnerClean, gameState.prizeAmount),
-                                mentions: [userSender]
+                                text: getAnimalsDeposit(senderNumber, gameState.prizeAmount),
+                                mentions: [safeJid]
                             });
 
-                            // ⭐ إعلان باللقب
-                            const winnerUser = db.users?.[winnerClean];
-                            const winnerNickname = (winnerUser && String(winnerUser.nickname || "").trim()) || winnerClean;
+                            const winnerUser = db.users?.[senderNumber];
+                            const winnerNickname = (winnerUser && String(winnerUser.nickname || "").trim()) || senderNumber;
 
                             const adMessage = `_*█ إنــتــهــت█*_
 
 ◇🎮 نـــــــوع الفعالية:
 *{الحيوانات}*
 
-◇🪎 آلَــــجَــــآئـزة:
+◇🪎 آلَــــجَــــآئـزَة:
 *{ ${gameState.prizeAmount}$ }*
 
 ◇🎖️ آلَفــــــآئــز:
@@ -431,22 +398,15 @@ async function handleAnimalsCommand(
                             if (db.adsGroups && typeof db.adsGroups === "object") {
                                 for (const adJid of Object.keys(db.adsGroups)) {
                                     if (!db.adsGroups[adJid]) continue;
-                                    await safeSend(sock, adJid, {
-                                        text: adMessage
-                                    });
+                                    await safeSend(sock, adJid, { text: adMessage });
                                 }
                             }
-
                             return;
                         }
 
-                        await safeSend(sock, jid, {
-                            text: getAnimalsCorrect(currentScore)
-                        }, { quoted: incomingMsg });
+                        await safeSend(sock, jid, { text: getAnimalsCorrect(currentScore) }, { quoted: incomingMsg });
 
-                        if (gameState.timers.next) {
-                            clearTimeout(gameState.timers.next);
-                        }
+                        if (gameState.timers.next) clearTimeout(gameState.timers.next);
 
                         gameState.timers.next = setTimeout(async () => {
                             gameState.timers.next = null;
@@ -512,16 +472,12 @@ async function sendNextAnimalQuestion(sock, jid, db, gameState) {
         });
     }
 
-    if (gameState.timers.question) {
-        clearTimeout(gameState.timers.question);
-    }
+    if (gameState.timers.question) clearTimeout(gameState.timers.question);
 
     gameState.timers.question = setTimeout(async () => {
         if (!gameState.isActive || gameState.isPaused) return;
         gameState.isWaitingNext = false;
-        await safeSend(sock, jid, {
-            text: getAnimalsTimeout()
-        });
+        await safeSend(sock, jid, { text: getAnimalsTimeout() });
         await sendNextAnimalQuestion(sock, jid, db, gameState);
     }, 30000);
 }
@@ -531,20 +487,15 @@ async function sendNextAnimalQuestion(sock, jid, db, gameState) {
 // ============================================================
 
 function startAnimalsInactivityTimer(sock, jid, gameState) {
-    if (gameState.timers.inactivity) {
-        clearTimeout(gameState.timers.inactivity);
-    }
+    if (gameState.timers.inactivity) clearTimeout(gameState.timers.inactivity);
 
     gameState.timers.inactivity = setTimeout(async () => {
         if (!gameState.isActive) return;
-
         const timeSinceLastActivity = Date.now() - gameState.lastActivity;
 
         if (timeSinceLastActivity > 3 * 60 * 1000) {
             gameState.stopGame();
-            await safeSend(sock, jid, {
-                text: getAnimalsInactiveStop()
-            });
+            await safeSend(sock, jid, { text: getAnimalsInactiveStop() });
             return;
         }
 
@@ -553,25 +504,12 @@ function startAnimalsInactivityTimer(sock, jid, gameState) {
 }
 
 // ============================================================
-// تنسيق التاريخ
-// ============================================================
-
-function formatDate(date) {
-    const days = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
-    const months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
-    return `${days[date.getDay()]} | ${date.getDate()} | ${months[date.getMonth()]}`;
-}
-
-// ============================================================
 // إيقاف اللعبة
 // ============================================================
 
 function stopAnimalsGame(jid) {
     const game = activeAnimals[jid];
-    if (game) {
-        game.stopGame();
-        return true;
-    }
+    if (game) { game.stopGame(); return true; }
     return false;
 }
 

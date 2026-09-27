@@ -2,12 +2,16 @@
 // shop.js
 // ALJESAT BOT
 // نظام المتجر - عرض وبيع القطع الأثرية
+// نسخة محدّثة: دعم LID
 // ============================================================
 
 "use strict";
 
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention } = require("./bot");
+
 // ============================================================
-// قائمة أسعار القطع (الحد الأدنى / الحد الأعلى / السعر الأوسط)
+// أسعار القطع (min / avg / max)
 // ============================================================
 
 const SHOP_PRICES = {
@@ -88,55 +92,18 @@ const SHOP_PRICES = {
 };
 
 // ============================================================
-// الحالة النشطة للمتجر
-// ============================================================
-
-const activeShops = Object.create(null);
-
-// ============================================================
-// أدوات مساعدة
-// ============================================================
-
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/\D/g, "");
-}
-
-function getUser(db, jid) {
-    if (!db || !db.users) return null;
-    return db.users[jid] || null;
-}
-
-function getUserNickname(db, jid) {
-    const user = getUser(db, jid);
-    return (user && String(user.nickname || "").trim()) || "مجهول";
-}
-
-async function safeSend(sock, jid, content, options = {}) {
-    if (!sock || !jid) return Promise.resolve(null);
-    return sock.sendMessage(jid, content, options).catch(() => null);
-}
-
-// ============================================================
-// الحصول على سعر عشوائي للقطعة (مع تقليل نسبة أعلى سعر)
+// الحصول على سعر عشوائي (تخفيض فرصة أعلى سعر)
 // ============================================================
 
 function getRandomPrice(emoji) {
     const item = SHOP_PRICES[emoji];
     if (!item) return null;
 
-    // نسبة ظهور السعر الأعلى 35% (تقليل 65%)
-    // نسبة ظهور السعر المتوسط 40%
-    // نسبة ظهور السعر الأدنى 25%
+    // 25% أدنى / 40% متوسط / 35% أعلى (بدل 65%)
     const rand = Math.random();
-
-    if (rand < 0.25) {
-        return item.min;
-    } else if (rand < 0.65) {
-        return item.avg;
-    } else {
-        return item.max;
-    }
+    if (rand < 0.25) return item.min;
+    if (rand < 0.65) return item.avg;
+    return item.max;
 }
 
 // ============================================================
@@ -309,7 +276,7 @@ _*هناك قطع لها اكثر من سعر...*_
 }
 
 function getShopRequestMessage(userNumber) {
-    const cleanNum = cleanNumber(userNumber);
+    const cleanNum = cleanNumber(String(userNumber).split("@")[0]);
     return `◆━─━─━─⊱🏦⊰─━─━─━◆
  المستخدم @${cleanNum}
 لقد طلبت قائمة للمتجر تفضل: 
@@ -328,25 +295,22 @@ function getSellError(emoji) {
 }
 
 // ============================================================
-// معالجة أمر .متجر
+// .متجر
 // ============================================================
 
 async function handleShopCommand(sock, jid, msg, db, cleanSender) {
     try {
-        const cleanNum = cleanNumber(cleanSender);
-        
-        // إرسال رسالة الطلب مع منشن
+        const cleanNum = cleanNumber(String(cleanSender).split("@")[0]);
+        const safeJid = buildSafeMention(cleanSender) || `${cleanNum}@s.whatsapp.net`;
+
         await safeSend(sock, jid, {
             text: getShopRequestMessage(cleanNum),
-            mentions: [`${cleanNum}@s.whatsapp.net`]
+            mentions: [safeJid]
         }, { quoted: msg });
 
-        // إرسال قائمة الأسعار
-        await safeSend(sock, jid, {
-            text: getShopPricesMessage()
-        });
+        await safeSend(sock, jid, { text: getShopPricesMessage() });
 
-        // إرسال الرسالة المخصصة (رقم 2) إذا كانت موجودة
+        // الرسائل المخصصة
         if (db.shopMessages && Array.isArray(db.shopMessages) && db.shopMessages.length > 0) {
             for (const shopMsg of db.shopMessages) {
                 if (shopMsg && String(shopMsg).trim()) {
@@ -364,53 +328,38 @@ async function handleShopCommand(sock, jid, msg, db, cleanSender) {
 }
 
 // ============================================================
-// معالجة أمر .بيع
+// .بيع
 // ============================================================
 
 async function handleSellCommand(sock, jid, msg, db, saveDb, cleanSender, emoji) {
     try {
-        const user = getUser(db, cleanSender);
+        const user = db.users?.[cleanSender];
         if (!user) {
-            await safeSend(sock, jid, {
-                text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل." }, { quoted: msg });
             return true;
         }
 
-        // التحقق من وجود القطعة في المخزون
-        const inventory = db.inventory && db.inventory[cleanSender] || [];
+        const inventory = (db.inventory && db.inventory[cleanSender]) || [];
         const itemIndex = inventory.findIndex(item => item.emoji === emoji);
 
         if (itemIndex === -1) {
-            await safeSend(sock, jid, {
-                text: getSellError(emoji)
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: getSellError(emoji) }, { quoted: msg });
             return true;
         }
 
-        // الحصول على سعر عشوائي
         const price = getRandomPrice(emoji);
         if (!price) {
-            await safeSend(sock, jid, {
-                text: "⚠️ هذه القطعة غير موجودة في قائمة المتجر."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ هذه القطعة غير موجودة في قائمة المتجر." }, { quoted: msg });
             return true;
         }
 
-        // حذف القطعة من المخزون
         db.inventory[cleanSender].splice(itemIndex, 1);
-
-        // إضافة السعر للرصيد
         user.balance = Number(user.balance) || 0;
         user.balance += price;
 
         if (typeof saveDb === "function") saveDb();
 
-        // إرسال رسالة البيع
-        await safeSend(sock, jid, {
-            text: getSellMessage(emoji, price)
-        }, { quoted: msg });
-
+        await safeSend(sock, jid, { text: getSellMessage(emoji, price) }, { quoted: msg });
         return true;
 
     } catch (error) {
@@ -420,24 +369,19 @@ async function handleSellCommand(sock, jid, msg, db, saveDb, cleanSender, emoji)
 }
 
 // ============================================================
-// معالجة أمر .تعديل متجر
+// .تعديل متجر
 // ============================================================
 
 async function handleEditShopCommand(sock, jid, msg, db, saveDb, cleanSender, isBotOwner, messageText) {
     try {
-        // التحقق من الصلاحيات (إمبراطور أو مالك)
         const isEmperor = db.emperors && db.emperors[cleanSender] === true;
         if (!isBotOwner && !isEmperor) {
-            await safeSend(sock, jid, {
-                text: "⛔ هذا الأمر مخصص للإمبراطور فقط."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⛔ هذا الأمر مخصص للإمبراطور فقط." }, { quoted: msg });
             return true;
         }
 
         if (!messageText || !String(messageText).trim()) {
-            await safeSend(sock, jid, {
-                text: "⚠️ يرجى كتابة الرسالة بعد الأمر.\nمثال: .تعديل متجر رسالتك هنا"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ يرجى كتابة الرسالة بعد الأمر.\nمثال: .تعديل متجر رسالتك هنا" }, { quoted: msg });
             return true;
         }
 
@@ -446,12 +390,9 @@ async function handleEditShopCommand(sock, jid, msg, db, saveDb, cleanSender, is
 
         if (typeof saveDb === "function") saveDb();
 
-        const messageNumber = db.shopMessages.length + 1; // +1 لأن الرسالة الأولى هي القائمة
+        const messageNumber = db.shopMessages.length + 1;
 
-        await safeSend(sock, jid, {
-            text: `✅ تم حفظ قائمة المتجر رقم ${messageNumber}`
-        }, { quoted: msg });
-
+        await safeSend(sock, jid, { text: `✅ تم حفظ قائمة المتجر رقم ${messageNumber}` }, { quoted: msg });
         return true;
 
     } catch (error) {
@@ -459,10 +400,6 @@ async function handleEditShopCommand(sock, jid, msg, db, saveDb, cleanSender, is
         return false;
     }
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     SHOP_PRICES,

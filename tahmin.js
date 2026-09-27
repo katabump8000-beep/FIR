@@ -1,7 +1,7 @@
 // ============================================================
 // tahmin.js
 // ALJESAT BOT
-// لعبة التخمين - نسخة محدّثة بتحميل سريع للصور
+// لعبة التخمين - نسخة محدّثة بدعم LID + كاش الصور
 // ============================================================
 
 "use strict";
@@ -9,8 +9,11 @@
 const path = require("path");
 const fs = require("fs");
 
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention } = require("./bot");
+
 // ============================================================
-// مراحل التحميل (8 مراحل خلال 8 ثواني)
+// مراحل التحميل
 // ============================================================
 
 const LOADING_STAGES = [
@@ -25,7 +28,7 @@ const LOADING_STAGES = [
 ];
 
 // ============================================================
-// مسار مجلد الصور
+// مجلد الصور
 // ============================================================
 
 const TAHMIN_FOLDER = path.join(__dirname, "tahmin_photo");
@@ -35,12 +38,12 @@ if (!fs.existsSync(TAHMIN_FOLDER)) {
 }
 
 // ============================================================
-// ⭐ كاش مسارات الصور + كاش البافر (لتسريع الإرسال)
+// ⭐ كاش مسارات الصور + كاش البافر
 // ============================================================
 
 const IMAGE_PATH_CACHE = Object.create(null);
 const IMAGE_BUFFER_CACHE = Object.create(null);
-const BUFFER_CACHE_LIMIT = 60; // آخر 60 صورة
+const BUFFER_CACHE_LIMIT = 60;
 const BUFFER_CACHE_KEYS = [];
 
 function cacheBuffer(key, buffer) {
@@ -132,7 +135,7 @@ const TAHMIN_LIST = [
 ];
 
 // ============================================================
-// الحالة النشطة للعبة
+// الحالة النشطة
 // ============================================================
 
 const activeTahmin = Object.create(null);
@@ -157,11 +160,6 @@ function normalizeText(text) {
         .replace(/ى/g, "ي")
         .replace(/ة/g, "ه")
         .replace(/\s+/g, " ");
-}
-
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/\D/g, "");
 }
 
 function getUser(db, jid) {
@@ -195,13 +193,12 @@ function getMessageText(message) {
 }
 
 // ============================================================
-// ⭐ الحصول على مسار الصورة (مع كاش)
+// ⭐ كاش المسارات والصور
 // ============================================================
 
 function getTahminImagePath(id) {
     if (!id) return null;
 
-    // فحص الكاش
     if (IMAGE_PATH_CACHE[id] !== undefined) {
         return IMAGE_PATH_CACHE[id];
     }
@@ -223,10 +220,6 @@ function tahminImageExists(id) {
     return getTahminImagePath(id) !== null;
 }
 
-// ============================================================
-// ⭐ قراءة البافر مع كاش (تسريع الإرسال للمرة الثانية+)
-// ============================================================
-
 function readImageFast(imagePath) {
     if (!imagePath) return null;
 
@@ -245,7 +238,7 @@ function readImageFast(imagePath) {
 }
 
 // ============================================================
-// عرض التحميل
+// التحميل
 // ============================================================
 
 async function showLoading(sock, jid, msg) {
@@ -254,10 +247,7 @@ async function showLoading(sock, jid, msg) {
 
     for (let i = 1; i < LOADING_STAGES.length; i++) {
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await safeSend(sock, jid, {
-            text: LOADING_STAGES[i],
-            edit: loadingMsg.key
-        });
+        await safeSend(sock, jid, { text: LOADING_STAGES[i], edit: loadingMsg.key });
     }
 
     return loadingMsg;
@@ -319,15 +309,13 @@ function formatDate(date) {
 }
 
 // ============================================================
-// بدء لعبة التخمين
+// بدء اللعبة
 // ============================================================
 
 async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBotOwner) {
     try {
         if (activeTahmin[jid]) {
-            await safeSend(sock, jid, {
-                text: "⚠️ هناك فعالية تخمين قائمة بالفعل في هذه المجموعة!"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ هناك فعالية تخمين قائمة بالفعل!" }, { quoted: msg });
             return true;
         }
 
@@ -335,25 +323,19 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
         const hasPermission = Boolean(isBotOwner) || db.gamePermissions.includes(cleanSender);
 
         if (!hasPermission) {
-            await safeSend(sock, jid, {
-                text: "⚠️ ليس لديك صلاحية لاستخدام هذا الأمر."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ ليس لديك صلاحية لاستخدام هذا الأمر." }, { quoted: msg });
             return true;
         }
 
         if (!hasNickname(db, cleanSender)) {
-            await safeSend(sock, jid, {
-                text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل لتتمكن من بدء الفعالية."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل." }, { quoted: msg });
             return true;
         }
 
         const availableCharacters = TAHMIN_LIST.filter(c => tahminImageExists(c.id));
 
         if (availableCharacters.length === 0) {
-            await safeSend(sock, jid, {
-                text: "❌ لا توجد صور شخصيات متوفرة. يرجى إضافة الصور إلى مجلد tahmin_photo/"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ لا توجد صور شخصيات متوفرة." }, { quoted: msg });
             return true;
         }
 
@@ -366,9 +348,7 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
             const elapsed = now - previousTime;
             if (elapsed < cooldownTime) {
                 const remainingMin = Math.ceil((cooldownTime - elapsed) / 60000);
-                await safeSend(sock, jid, {
-                    text: `⏳ يرجى الانتظار ${remainingMin} دقائق قبل بدء فعالية جديدة.`
-                }, { quoted: msg });
+                await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق.` }, { quoted: msg });
                 return true;
             }
         }
@@ -404,9 +384,7 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
 
         activeTahmin[jid] = gameState;
 
-        await safeSend(sock, jid, {
-            text: getTahminStartMessage()
-        }, { quoted: msg });
+        await safeSend(sock, jid, { text: getTahminStartMessage() }, { quoted: msg });
 
         setTimeout(async () => {
             if (!gameState.isActive) return;
@@ -429,8 +407,17 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
                 if (!txt) return;
                 if (txt.startsWith(".")) return;
 
-                const userSender = incomingMsg.key?.participant || incomingMsg.key?.remoteJid;
+                // ⭐ دعم LID
+                const userSender =
+                    incomingMsg.key?.participantPn ||
+                    incomingMsg.key?.participant_pn ||
+                    incomingMsg.key?.senderPn ||
+                    incomingMsg.key?.participant ||
+                    incomingMsg.key?.remoteJid;
                 if (!userSender) return;
+
+                const senderNumber = cleanNumber(String(userSender).split("@")[0]);
+                const safeJid = buildSafeMention(userSender) || `${senderNumber}@s.whatsapp.net`;
 
                 gameState.lastActivity = Date.now();
 
@@ -444,35 +431,32 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
 
                     if (isCorrect) {
                         gameState.isWaitingNext = true;
-                        const senderNumber = cleanNumber(userSender);
                         gameState.scores[senderNumber] = (gameState.scores[senderNumber] || 0) + 1;
                         const currentScore = gameState.scores[senderNumber];
 
                         if (currentScore >= 10) {
-                            const winnerClean = cleanNumber(userSender);
-
                             gameState.stopGame();
 
                             await safeSend(sock, jid, {
-                                text: getTahminWinner(winnerClean),
-                                mentions: [userSender]
+                                text: getTahminWinner(senderNumber),
+                                mentions: [safeJid]
                             });
 
                             db.users = db.users && typeof db.users === "object" ? db.users : {};
-                            if (db.users[winnerClean]) {
-                                const user = db.users[winnerClean];
+                            if (db.users[senderNumber]) {
+                                const user = db.users[senderNumber];
                                 user.balance = Number(user.balance) || 0;
                                 user.balance += gameState.prizeAmount;
                                 if (typeof saveDb === "function") saveDb();
                             }
 
                             await safeSend(sock, jid, {
-                                text: getTahminDeposit(winnerClean, gameState.prizeAmount),
-                                mentions: [userSender]
+                                text: getTahminDeposit(senderNumber, gameState.prizeAmount),
+                                mentions: [safeJid]
                             });
 
-                            const winnerUser = db.users?.[winnerClean];
-                            const winnerNickname = (winnerUser && String(winnerUser.nickname || "").trim()) || winnerClean;
+                            const winnerUser = db.users?.[senderNumber];
+                            const winnerNickname = (winnerUser && String(winnerUser.nickname || "").trim()) || senderNumber;
 
                             const adMessage = `_*█ إنــتــهــت█*_
 
@@ -500,9 +484,7 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
                             return;
                         }
 
-                        await safeSend(sock, jid, {
-                            text: getTahminCorrect(currentScore)
-                        }, { quoted: incomingMsg });
+                        await safeSend(sock, jid, { text: getTahminCorrect(currentScore) }, { quoted: incomingMsg });
 
                         if (gameState.timers.next) clearTimeout(gameState.timers.next);
 
@@ -534,7 +516,7 @@ async function handleTahminCommand(sock, jid, msg, db, saveDb, cleanSender, isBo
 }
 
 // ============================================================
-// ⭐ إرسال السؤال التالي - نسخة سريعة
+// إرسال السؤال التالي — ⭐ نسخة سريعة
 // ============================================================
 
 async function sendNextTahminQuestion(sock, jid, db, gameState) {
@@ -554,11 +536,10 @@ async function sendNextTahminQuestion(sock, jid, db, gameState) {
 
     if (imagePath) {
         try {
-            // ⭐ استخدام البافر المخزّن (أسرع بكثير)
             const imageBuffer = readImageFast(imagePath);
 
             if (imageBuffer) {
-                // ⭐ إرسال مباشر بدون تأخير (مثل animals.js)
+                // ⭐ إرسال سريع بدون delay
                 await safeSend(sock, jid, {
                     image: imageBuffer,
                     caption: getTahminQuestion()
@@ -610,16 +591,9 @@ function startTahminInactivityTimer(sock, jid, gameState) {
     }, 60000);
 }
 
-// ============================================================
-// إيقاف اللعبة
-// ============================================================
-
 function stopTahminGame(jid) {
     const game = activeTahmin[jid];
-    if (game) {
-        game.stopGame();
-        return true;
-    }
+    if (game) { game.stopGame(); return true; }
     return false;
 }
 
@@ -627,19 +601,11 @@ function checkTahminActive(jid) {
     return Boolean(activeTahmin[jid] && activeTahmin[jid].isActive);
 }
 
-// ============================================================
-// تفريغ الكاش (اختياري — عند تحديث الصور)
-// ============================================================
-
 function clearTahminCache() {
     for (const k of Object.keys(IMAGE_PATH_CACHE)) delete IMAGE_PATH_CACHE[k];
     for (const k of Object.keys(IMAGE_BUFFER_CACHE)) delete IMAGE_BUFFER_CACHE[k];
     BUFFER_CACHE_KEYS.length = 0;
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     activeTahmin,

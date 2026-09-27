@@ -2,6 +2,7 @@
 // bot.js
 // ALJESAT BOT
 // Core / Database / WhatsApp Connection
+// نسخة محدّثة: دعم LID + participantPn
 // ============================================================
 
 "use strict";
@@ -38,10 +39,6 @@ let shuttingDown = false;
 let startPromise = null;
 let isReconnecting = false;
 
-// ============================================================
-// Handlers
-// ============================================================
-
 let handlers = {
     onMessage: null,
     onGroupUpdate: null,
@@ -52,85 +49,274 @@ let handlers = {
 const MAX_RECONNECT_DELAY = 30000;
 
 // ============================================================
+// ⭐ دوال LID / PN — جديدة لمعالجة المنشن الصحيح
+// ============================================================
+
+/**
+ * التحقق أن JID صالح كرقم هاتف حقيقي (PN)
+ */
+function isValidPnJid(jid) {
+    if (!jid || typeof jid !== "string") return false;
+    if (!jid.endsWith("@s.whatsapp.net")) return false;
+    const num = jid.split("@")[0];
+    return /^\d{10,15}$/.test(num);
+}
+
+/**
+ * استخراج JID الحقيقي من أي مصدر (يدعم LID و PN)
+ * الأولوية: participantPn > participant > remoteJid
+ */
+function getRealJid(source) {
+    if (!source) return "";
+
+    // إذا كان نصاً مباشراً
+    if (typeof source === "string") {
+        return source;
+    }
+
+    // إذا كان كائناً (msg أو participant أو key)
+    if (typeof source === "object") {
+        return (
+            source.participantPn ||
+            source.participant_pn ||
+            source.senderPn ||
+            source.pn ||
+            source.participant ||
+            source.remoteJid ||
+            source.id ||
+            source.jid ||
+            ""
+        );
+    }
+
+    return "";
+}
+
+/**
+ * بناء منشن آمن من أي مصدر
+ * - إذا كان JID صحيح: نعيده كما هو
+ * - إذا كان LID: نحاول استخراج رقم (أفضل جهد)
+ */
+function buildSafeMention(source) {
+    if (!source) return "";
+
+    let jid = "";
+    if (typeof source === "string") jid = source;
+    else if (typeof source === "object") {
+        jid = source.participantPn ||
+              source.participant_pn ||
+              source.senderPn ||
+              source.pn ||
+              source.participant ||
+              source.remoteJid ||
+              source.id ||
+              "";
+    }
+
+    if (!jid) return "";
+
+    // إذا كان PN صحيح، نعيده كما هو
+    if (isValidPnJid(jid)) return jid;
+
+    // استخراج الأرقام فقط
+    const num = String(jid).split("@")[0].replace(/\D/g, "");
+    if (num && num.length >= 10 && num.length <= 15) {
+        return `${num}@s.whatsapp.net`;
+    }
+
+    return "";
+}
+
+/**
+ * استخراج رقم من JID (بدون @s.whatsapp.net)
+ */
+function getNumberFromJid(source) {
+    const jid = buildSafeMention(source);
+    if (!jid) return "";
+    return jid.split("@")[0];
+}
+
+/**
+ * استخراج الرقم الحقيقي من msg (مع LID support)
+ */
+function getSenderNumber(msg, sock = null) {
+    if (!msg) return "";
+
+    // من خود msg
+    if (msg?.key?.fromMe && sock) {
+        return jidToNumber(sock?.user?.id);
+    }
+
+    // الأولوية لـ participantPn
+    const jid =
+        msg?.key?.participantPn ||
+        msg?.key?.participant_pn ||
+        msg?.key?.senderPn ||
+        msg?.key?.participant ||
+        msg?.key?.remoteJid ||
+        "";
+
+    return cleanNumber(String(jid).split("@")[0]);
+}
+
+/**
+ * استخراج JID الحقيقي للمرسل من msg
+ */
+function getSenderJid(msg, sock = null) {
+    if (!msg) return "";
+
+    if (msg?.key?.fromMe && sock) {
+        return sock?.user?.id || "";
+    }
+
+    const jid =
+        msg?.key?.participantPn ||
+        msg?.key?.participant_pn ||
+        msg?.key?.senderPn ||
+        msg?.key?.participant ||
+        msg?.key?.remoteJid ||
+        "";
+
+    return jid;
+}
+
+/**
+ * استخراج JID المذكور من contextInfo (مع LID support)
+ * يعطي الأولوية لـ mentionedPn إذا وُجد
+ */
+function getRealMentionedJid(msg) {
+    try {
+        const ctx =
+            msg?.message?.extendedTextMessage?.contextInfo ||
+            msg?.message?.contextInfo ||
+            null;
+        if (!ctx) return null;
+
+        // الأولوية: mentionedPn
+        if (Array.isArray(ctx.mentionedPn) && ctx.mentionedPn[0]) {
+            return ctx.mentionedPn[0];
+        }
+
+        const mentioned = Array.isArray(ctx.mentionedJid) ? ctx.mentionedJid[0] : null;
+        if (!mentioned) return null;
+
+        // إذا كان LID، حاول إيجاد PN
+        if (String(mentioned).endsWith("@lid")) {
+            const participants = Array.isArray(ctx.participants) ? ctx.participants : [];
+            for (const p of participants) {
+                if (p.lid === mentioned && (p.pn || p.phoneNumber)) {
+                    return p.pn || p.phoneNumber;
+                }
+            }
+            // إذا لم نجد PN، نُعيد LID كما هو (احتياط)
+            return mentioned;
+        }
+
+        return mentioned;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * استخراج كل المنشنين الحقيقيين من contextInfo
+ */
+function getRealMentionedJids(msg) {
+    try {
+        const ctx =
+            msg?.message?.extendedTextMessage?.contextInfo ||
+            msg?.message?.contextInfo ||
+            null;
+        if (!ctx) return [];
+
+        // الأولوية: mentionedPn
+        if (Array.isArray(ctx.mentionedPn) && ctx.mentionedPn.length) {
+            return ctx.mentionedPn.filter(Boolean);
+        }
+
+        const mentioned = Array.isArray(ctx.mentionedJid) ? ctx.mentionedJid : [];
+        return mentioned.map(jid => {
+            if (String(jid).endsWith("@lid")) {
+                const participants = Array.isArray(ctx.participants) ? ctx.participants : [];
+                for (const p of participants) {
+                    if (p.lid === jid && (p.pn || p.phoneNumber)) {
+                        return p.pn || p.phoneNumber;
+                    }
+                }
+            }
+            return jid;
+        }).filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+// ============================================================
 // Database
 // ============================================================
 
 function createDefaultDatabase() {
     return {
-        // الإعدادات العامة
         groupSettings: {},
         adsGroups: {},
         bankGroups: {},
         workGroups: {},
         receiveGroups: {},
+        purchaseOrderGroups: {},
 
-        // 🆕 القروب الأساسي
         mainGroup: {},
+        organizedGroups: {},
 
-        // المستخدمون
         cooldowns: {},
         users: {},
         admins: {},
 
-        // الصلاحيات
         permissions: { "1": [], "2": [], "3": [], "4": [] },
         gamePermissions: [],
         gameCooldown: {},
 
-        // المراقبة
         monitoredUsers: {},
+        monitors: {},
 
-        // المكافآت اليومية
         dailyData: {},
         dailyCooldown: {},
         chainPermissions: [],
 
-        // الكازينو
         rouletteCooldown: {},
         crystalCooldown: {},
         crystalPlayerCooldown: {},
+        guessCooldown: {},
 
-        // المزاد
         pendingSend: {},
         mazadCreator: null,
+        mazadRevoked: false,
+        mazadPermitted: {},
         inventory: {},
 
-        // 🆕 نظام الصور
         userPhotos: {},
-
-        // 🆕 الأباطرة
         emperors: {},
+        botIdentities: {},
+        permanentMembers: {},
+        workForms: {},
 
-        // 🆕 روابط الترحيب
-        welcomeLinks: {
-            link1: "",
-            link2: ""
-        },
+        welcomeLinks: { link1: "", link2: "" },
 
-        // 🆕 حماية البطاقات
         protectCards: {},
-
-        // 🆕 التفاعل التلقائي
         reactEnabled: {},
-
-        // 🆕 عدّاد الرسائل
         hisbaEnabled: {},
-
-        // 🆕 تصحيح الأخطاء
         typoEnabled: {},
-
-        // 🆕 بيانات نتائج الفعاليات
         resultsData: {},
 
-        // 🆕 تفعيل الردود
         repliesEnabled: {},
         ahaEnabled: {},
         quietEnabled: {},
-        organizedGroups: {},
 
-        // 🆕 توقيت الحفظ
         autoSaveEnabled: false,
-        autoSaveGroupJid: null
+        autoSaveGroupJid: null,
+
+        bans: {},
+        bankruptcy: {},
+        shopMessages: []
     };
 }
 
@@ -139,15 +325,16 @@ function ensureDatabaseShape() {
         db = createDefaultDatabase();
     }
 
-    // الحقول التي يجب أن تكون objects
     const objectFields = [
         "groupSettings", "adsGroups", "bankGroups", "workGroups", "receiveGroups",
-        "cooldowns", "users", "admins", "gameCooldown", "monitoredUsers",
-        "dailyData", "dailyCooldown", "chainPermissions", "rouletteCooldown",
-        "crystalCooldown", "crystalPlayerCooldown", "pendingSend", "inventory",
-        "mainGroup", "userPhotos", "emperors", "protectCards",
+        "purchaseOrderGroups", "cooldowns", "users", "admins", "gameCooldown",
+        "monitoredUsers", "monitors", "dailyData", "dailyCooldown",
+        "rouletteCooldown", "crystalCooldown", "crystalPlayerCooldown", "guessCooldown",
+        "pendingSend", "mazadPermitted", "inventory", "userPhotos", "emperors",
+        "botIdentities", "permanentMembers", "workForms", "protectCards",
         "reactEnabled", "hisbaEnabled", "typoEnabled", "resultsData",
-        "repliesEnabled", "ahaEnabled", "quietEnabled", "organizedGroups"
+        "repliesEnabled", "ahaEnabled", "quietEnabled", "mainGroup",
+        "organizedGroups", "bans", "bankruptcy"
     ];
 
     for (const field of objectFields) {
@@ -156,7 +343,6 @@ function ensureDatabaseShape() {
         }
     }
 
-    // welcomeLinks
     if (!db.welcomeLinks || typeof db.welcomeLinks !== "object" || Array.isArray(db.welcomeLinks)) {
         db.welcomeLinks = { link1: "", link2: "" };
     } else {
@@ -164,19 +350,18 @@ function ensureDatabaseShape() {
         if (typeof db.welcomeLinks.link2 !== "string") db.welcomeLinks.link2 = "";
     }
 
-    // permissions
     if (!db.permissions || typeof db.permissions !== "object" || Array.isArray(db.permissions)) {
         db.permissions = {};
     }
     for (const level of ["1", "2", "3", "4"]) {
-        if (!Array.isArray(db.permissions[level])) {
-            db.permissions[level] = [];
-        }
+        if (!Array.isArray(db.permissions[level])) db.permissions[level] = [];
     }
 
     if (!Array.isArray(db.gamePermissions)) db.gamePermissions = [];
     if (!Array.isArray(db.chainPermissions)) db.chainPermissions = [];
+    if (!Array.isArray(db.shopMessages)) db.shopMessages = [];
     if (typeof db.mazadCreator !== "string" && db.mazadCreator !== null) db.mazadCreator = null;
+    if (typeof db.mazadRevoked !== "boolean") db.mazadRevoked = false;
 
     return db;
 }
@@ -195,24 +380,17 @@ function loadDatabase() {
             db = createDefaultDatabase();
         } else {
             const parsed = JSON.parse(raw);
-
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
                 throw new Error("database.json لا يحتوي على بيانات صحيحة.");
             }
-
-            db = {
-                ...createDefaultDatabase(),
-                ...parsed
-            };
+            db = { ...createDefaultDatabase(), ...parsed };
         }
 
         ensureDatabaseShape();
         return db;
 
     } catch (error) {
-        console.error("❌ تعذر تحميل database.json:");
-        console.error(error?.message || error);
-
+        console.error("❌ تعذر تحميل database.json:", error?.message || error);
         db = createDefaultDatabase();
         ensureDatabaseShape();
         return db;
@@ -222,32 +400,22 @@ function loadDatabase() {
 function saveDb() {
     try {
         ensureDatabaseShape();
-
         const tempFile = `${DB_FILE}.tmp`;
         const json = JSON.stringify(db, null, 2);
-
         fs.writeFileSync(tempFile, json, "utf8");
         fs.renameSync(tempFile, DB_FILE);
-
         return true;
-
     } catch (error) {
-        console.error("❌ خطأ أثناء حفظ database.json:");
-        console.error(error?.message || error);
-
+        console.error("❌ خطأ أثناء حفظ database.json:", error?.message || error);
         try {
             const tempFile = `${DB_FILE}.tmp`;
-            if (fs.existsSync(tempFile)) {
-                fs.unlinkSync(tempFile);
-            }
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
         } catch (_) {}
-
         return false;
     }
 }
 
 loadDatabase();
-
 global.db = db;
 global.saveDb = saveDb;
 
@@ -273,18 +441,17 @@ function isGroupJid(jid) {
     return typeof jid === "string" && jid.endsWith("@g.us");
 }
 
-function formatMention(number) {
-    const clean = cleanNumber(number);
-    if (!clean) return "";
-    return `${clean}@s.whatsapp.net`;
+/**
+ * ⭐ نسخة محدّثة: تبني منشن آمن من رقم أو JID
+ */
+function formatMention(source) {
+    return buildSafeMention(source);
 }
 
 function getOwnerNumbers() {
     const configuredOwners = Array.isArray(settings.owners)
         ? settings.owners
-        : settings.owners
-            ? [settings.owners]
-            : [];
+        : settings.owners ? [settings.owners] : [];
 
     const owners = configuredOwners.map(cleanNumber).filter(Boolean);
 
@@ -300,13 +467,9 @@ function getBotNumber(sock = currentSocket) {
     return jidToNumber(sock?.user?.id);
 }
 
-/**
- * 🆕 فحص هل المستخدم مالك أو امبراطور
- */
 function isOwner(senderNumber, sock = currentSocket, msg = null) {
     const sender = cleanNumber(senderNumber);
     if (!sender) return false;
-
     if (msg?.key?.fromMe) return true;
 
     const owners = getOwnerNumbers();
@@ -315,11 +478,8 @@ function isOwner(senderNumber, sock = currentSocket, msg = null) {
     const botNumber = getBotNumber(sock);
     if (botNumber && sender === botNumber) return true;
 
-    // 🆕 فحص الأباطرة
     try {
-        if (db && db.emperors && db.emperors[sender] === true) {
-            return true;
-        }
+        if (db && db.emperors && db.emperors[sender] === true) return true;
     } catch (_) {}
 
     return false;
@@ -342,7 +502,6 @@ function ensureUser(userNumber) {
     }
 
     const user = db.users[number];
-
     if (typeof user.balance !== "number" || !Number.isFinite(user.balance)) user.balance = 0;
     if (typeof user.nickname !== "string") user.nickname = "";
     if (typeof user.rank !== "string") user.rank = "";
@@ -354,19 +513,15 @@ function ensureUser(userNumber) {
 
 function hasPermission(userNumber, level, owner = false) {
     if (owner) return true;
-
     ensureDatabaseShape();
-
     const number = cleanNumber(userNumber);
     const permissionLevel = String(level);
-
     return Array.isArray(db.permissions[permissionLevel]) &&
         db.permissions[permissionLevel].includes(number);
 }
 
 function getMessageText(message) {
     if (!message) return "";
-
     const text =
         message.conversation ||
         message.extendedTextMessage?.text ||
@@ -385,32 +540,21 @@ function getMessageText(message) {
     return typeof text === "string" ? text.trim() : "";
 }
 
+/**
+ * ⭐ نسخة محدّثة: تستخدم getRealMentionedJid
+ */
 function getMentionedJid(msg) {
-    try {
-        return msg?.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
-            msg?.message?.contextInfo?.mentionedJid?.[0] ||
-            null;
-    } catch {
-        return null;
-    }
+    return getRealMentionedJid(msg);
 }
 
 async function sendText(sock, jid, text, msg = null, extra = {}) {
     if (!sock || !jid) return null;
-
     try {
         const messageText = String(text ?? "").trim();
         if (!messageText) return null;
-
-        const options = {
-            text: messageText,
-            ...extra
-        };
-
+        const options = { text: messageText, ...extra };
         const sendOptions = msg ? { quoted: msg } : undefined;
-
         return await sock.sendMessage(jid, options, sendOptions);
-
     } catch (error) {
         console.error(`❌ فشل إرسال الرسالة إلى ${jid}:`, error?.message || error);
         return null;
@@ -450,7 +594,6 @@ function getDailyMessage(day, reward, nextReward) {
 في وصف المملكة بالكامل 🔥
 🎁▬▬▬▬🎊▬▬▬▬🎁`;
     }
-
     return `🎁▬▬▬▬🎀▬▬▬▬🎁
 هديتك اليوم: ${reward}$
 سلسلة تسجيل دخولك: ${day} أيام
@@ -462,7 +605,6 @@ function getCooldownMessage(timeLeft, nextReward) {
     const hours = Math.floor(timeLeft / 3600000);
     const minutes = Math.floor((timeLeft % 3600000) / 60000);
     const timeStr = hours > 0 ? `${hours} ساعة و ${minutes} دقيقة` : `${minutes} دقيقة`;
-
     return `⚠️▬▬▬▬🎁▬▬▬▬⚠️
 عذرا يرجى الانتظار {${timeStr}}
 حتى تستطيع الحصول على الجائزة
@@ -485,19 +627,13 @@ function getNoNicknameMessage() {
 
 function configureHandlers(newHandlers = {}) {
     if (newHandlers && typeof newHandlers === "object") {
-        handlers = {
-            ...handlers,
-            ...newHandlers
-        };
+        handlers = { ...handlers, ...newHandlers };
     }
     return handlers;
 }
 
 function clearReconnectTimer() {
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-    }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 }
 
 function getReconnectDelay() {
@@ -505,9 +641,7 @@ function getReconnectDelay() {
         1000 * Math.pow(2, Math.max(0, reconnectAttempts - 1)),
         MAX_RECONNECT_DELAY
     );
-
     const jitter = Math.floor(Math.random() * 1000);
-
     return Math.min(exponential + jitter, MAX_RECONNECT_DELAY);
 }
 
@@ -519,11 +653,8 @@ function registerEvents(sock, saveCreds) {
 
     if (typeof saveCreds === "function") {
         sock.ev.on("creds.update", async (...args) => {
-            try {
-                await saveCreds(...args);
-            } catch (error) {
-                console.error("❌ خطأ أثناء حفظ بيانات الجلسة:", error?.message || error);
-            }
+            try { await saveCreds(...args); }
+            catch (error) { console.error("❌ خطأ أثناء حفظ بيانات الجلسة:", error?.message || error); }
         });
     }
 
@@ -535,23 +666,17 @@ function registerEvents(sock, saveCreds) {
                 reconnectAttempts = 0;
                 clearReconnectTimer();
                 isReconnecting = false;
-
                 console.log("✅ تم اتصال البوت بنجاح!");
-
                 if (typeof handlers.onConnectionOpen === "function") {
                     await handlers.onConnectionOpen(sock, { db, saveDb });
                 }
-
                 return;
             }
 
             if (connection === "close") {
                 if (typeof handlers.onConnectionClose === "function") {
-                    try {
-                        await handlers.onConnectionClose(sock, update);
-                    } catch (error) {
-                        console.error("❌ خطأ في onConnectionClose:", error?.message || error);
-                    }
+                    try { await handlers.onConnectionClose(sock, update); }
+                    catch (error) { console.error("❌ خطأ في onConnectionClose:", error?.message || error); }
                 }
 
                 if (shuttingDown) return;
@@ -560,27 +685,20 @@ function registerEvents(sock, saveCreds) {
                 const loggedOut = statusCode === DisconnectReason.loggedOut;
 
                 if (loggedOut) {
-                    console.error("🚫 تم تسجيل خروج الجلسة. لن تتم إعادة الاتصال تلقائياً.");
+                    console.error("🚫 تم تسجيل خروج الجلسة.");
                     currentSocket = null;
                     return;
                 }
 
                 reconnectAttempts++;
                 const delay = getReconnectDelay();
-
                 console.warn(`⚠️ انقطع الاتصال. إعادة المحاولة بعد ${Math.ceil(delay / 1000)} ثانية...`);
-
                 clearReconnectTimer();
-
                 reconnectTimer = setTimeout(async () => {
                     reconnectTimer = null;
-
-                    if (!shuttingDown) {
-                        await reconnect();
-                    }
+                    if (!shuttingDown) await reconnect();
                 }, delay);
             }
-
         } catch (error) {
             console.error("❌ خطأ في connection.update:", error?.message || error);
         }
@@ -588,22 +706,14 @@ function registerEvents(sock, saveCreds) {
 
     sock.ev.on("messages.upsert", async event => {
         if (typeof handlers.onMessage !== "function") return;
-
-        try {
-            await handlers.onMessage(sock, event, { db, saveDb });
-        } catch (error) {
-            console.error("❌ خطأ في messages.upsert:", error?.message || error);
-        }
+        try { await handlers.onMessage(sock, event, { db, saveDb }); }
+        catch (error) { console.error("❌ خطأ في messages.upsert:", error?.message || error); }
     });
 
     sock.ev.on("group-participants.update", async update => {
         if (typeof handlers.onGroupUpdate !== "function") return;
-
-        try {
-            await handlers.onGroupUpdate(sock, update, { db, saveDb });
-        } catch (error) {
-            console.error("❌ خطأ في group-participants.update:", error?.message || error);
-        }
+        try { await handlers.onGroupUpdate(sock, update, { db, saveDb }); }
+        catch (error) { console.error("❌ خطأ في group-participants.update:", error?.message || error); }
     });
 
     console.log("✅ تم تسجيل جميع Events على الـSocket الجديد");
@@ -611,7 +721,6 @@ function registerEvents(sock, saveCreds) {
 
 function cleanupSocket(sock) {
     if (!sock || !sock.ev) return;
-
     try {
         sock.ev.removeAllListeners();
         console.log("🧹 تم تنظيف الـListeners من الـSocket القديم");
@@ -622,19 +731,15 @@ function cleanupSocket(sock) {
 
 async function reconnect() {
     if (isReconnecting || shuttingDown) return;
-
     isReconnecting = true;
 
     try {
         console.log("🔄 جارٍ إعادة الاتصال...");
-
         if (currentSocket) {
             cleanupSocket(currentSocket);
             currentSocket = null;
         }
-
         const sock = await createSocket();
-
         if (sock) {
             currentSocket = sock;
             console.log("✅ تم إعادة الاتصال بنجاح");
@@ -643,11 +748,9 @@ async function reconnect() {
             console.error("❌ فشل إعادة الاتصال");
             isReconnecting = false;
         }
-
     } catch (error) {
         console.error("❌ خطأ في إعادة الاتصال:", error?.message || error);
         isReconnecting = false;
-
         if (!shuttingDown) {
             clearReconnectTimer();
             reconnectTimer = setTimeout(async () => {
@@ -667,7 +770,7 @@ async function createSocket() {
             const latest = await fetchLatestBaileysVersion();
             version = latest?.version;
         } catch (error) {
-            console.warn("⚠️ تعذر جلب إصدار Baileys الأخير، سيتم استخدام الإعداد الافتراضي.");
+            console.warn("⚠️ تعذر جلب إصدار Baileys الأخير.");
             version = undefined;
         }
 
@@ -676,13 +779,10 @@ async function createSocket() {
             printQRInTerminal: false,
             logger: pino({ level: "silent" }),
             markOnlineOnConnect: true,
-            // 🆕 تفعيل مزامنة التاريخ الكامل لدعم .تنظيف
             syncFullHistory: true
         };
 
-        if (version) {
-            socketOptions.version = version;
-        }
+        if (version) socketOptions.version = version;
 
         const sock = makeWASocket(socketOptions);
 
@@ -691,19 +791,12 @@ async function createSocket() {
 
         if (!state.creds.registered && pairingNumber) {
             console.log(`\n🤖 جار تجهيز رمز الاقتران للرقم: ${pairingNumber}`);
-
             setTimeout(async () => {
                 try {
                     if (!currentSocket || currentSocket !== sock) return;
-
                     let code = await sock.requestPairingCode(pairingNumber);
-
-                    if (code) {
-                        code = String(code).match(/.{1,4}/g)?.join("-") || code;
-                    }
-
+                    if (code) code = String(code).match(/.{1,4}/g)?.join("-") || code;
                     console.log(`🔑 رمز الاقتران الخاص بك هو: [ ${code} ]\n`);
-
                 } catch (error) {
                     console.error("❌ خطأ في رمز الاقتران:", error?.message || error);
                 }
@@ -711,7 +804,6 @@ async function createSocket() {
         }
 
         registerEvents(sock, saveCreds);
-
         return sock;
 
     } catch (error) {
@@ -725,28 +817,19 @@ async function startBot(customHandlers = null) {
         configureHandlers(customHandlers);
     }
 
-    if (shuttingDown) {
-        throw new Error("البوت في وضع الإيقاف.");
-    }
-
-    if (startPromise) {
-        return startPromise;
-    }
+    if (shuttingDown) throw new Error("البوت في وضع الإيقاف.");
+    if (startPromise) return startPromise;
 
     startPromise = (async () => {
         try {
             ensureDatabaseShape();
-
             if (currentSocket) {
                 cleanupSocket(currentSocket);
                 currentSocket = null;
             }
-
             const sock = await createSocket();
             currentSocket = sock;
-
             return sock;
-
         } finally {
             startPromise = null;
         }
@@ -757,28 +840,21 @@ async function startBot(customHandlers = null) {
 
 async function shutdown() {
     shuttingDown = true;
-
     clearReconnectTimer();
-
     if (currentSocket) {
         cleanupSocket(currentSocket);
         currentSocket = null;
     }
-
     saveDb();
-
     console.log("🛑 تم إيقاف البوت.");
 }
 
-process.once("SIGINT", async () => {
-    await shutdown();
-    process.exit(0);
-});
+process.once("SIGINT", async () => { await shutdown(); process.exit(0); });
+process.once("SIGTERM", async () => { await shutdown(); process.exit(0); });
 
-process.once("SIGTERM", async () => {
-    await shutdown();
-    process.exit(0);
-});
+// ============================================================
+// تصدير
+// ============================================================
 
 module.exports = {
     startBot,
@@ -797,6 +873,16 @@ module.exports = {
     jidToNumber,
     isGroupJid,
     formatMention,
+
+    // ⭐ دوال LID الجديدة
+    isValidPnJid,
+    getRealJid,
+    buildSafeMention,
+    getNumberFromJid,
+    getSenderNumber,
+    getSenderJid,
+    getRealMentionedJid,
+    getRealMentionedJids,
 
     getOwnerNumbers,
     getBotNumber,

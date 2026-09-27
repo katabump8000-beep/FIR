@@ -2,13 +2,10 @@
 // commands_list.js
 // ALJESAT BOT
 // قائمة الأوامر (.اوامر) - تختلف حسب القروب
+// نسخة محدّثة: إضافة الأوامر الجديدة
 // ============================================================
 
 "use strict";
-
-// ============================================================
-// أدوات مساعدة
-// ============================================================
 
 function cleanNumber(value) {
     if (!value) return "";
@@ -20,12 +17,8 @@ async function safeSend(sock, jid, content, options = {}) {
     return sock.sendMessage(jid, content, options).catch(() => null);
 }
 
-/**
- * فحص هل المستخدم لديه صلاحية إدارية (1/2/3/4)
- */
 function hasAdminPerm(db, cleanSender, isBotOwner) {
     if (isBotOwner) return true;
-
     const permissions = db.permissions || {};
     for (const level of ["1", "2", "3", "4"]) {
         if (Array.isArray(permissions[level]) && permissions[level].includes(cleanSender)) {
@@ -35,30 +28,18 @@ function hasAdminPerm(db, cleanSender, isBotOwner) {
     return false;
 }
 
-/**
- * فحص هل القروب هو ADS
- */
 function isAdsGroup(db, jid) {
     return Boolean(db.adsGroups && db.adsGroups[jid] === true);
 }
 
-/**
- * فحص هل القروب هو الأساسي
- */
 function isMainGroup(db, jid) {
     return Boolean(db.mainGroup && db.mainGroup[jid] === true);
 }
 
-/**
- * فحص هل القروب هو قروب البنك
- */
 function isBankGroup(db, jid) {
     return Boolean(db.bankGroups && db.bankGroups[jid] === true);
 }
 
-/**
- * فحص هل القروب هو قروب العمل
- */
 function isWorkGroup(db, jid) {
     return Boolean(db.workGroups && db.workGroups[jid] === true);
 }
@@ -104,7 +85,7 @@ const SHORT_COMMANDS_LIST = `_*❉▬▬▬▬اوامر▬▬▬▬❉*_
 _*✥▬▬▬▬اوامر▬▬▬▬✥*_`;
 
 // ============================================================
-// قائمة الأوامر الكاملة (لقروب آخر)
+// قائمة الأوامر الكاملة
 // ============================================================
 
 const FULL_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر⊱⏣═━━━━❆*_
@@ -149,11 +130,17 @@ const FULL_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر⊱⏣═━━�
 \`.ادفع (مبلغ)\` - وضع عرض
 \`.مخزوني\` - عرض المخزون
 \`.انهاء مزاد\` - إنهاء المزاد (إمبراطور)
+\`.سحب مزاد\` - منع المزاد (إمبراطور)
+\`.مزاد @user\` - منح صلاحية المزاد (إمبراطور)
 
 *🛒 المتجر:*
 \`.متجر\` - عرض المتجر
 \`.بيع (إيموجي)\` - بيع قطعة
 \`.تعديل متجر (رسالة)\` - إضافة رسالة (إمبراطور)
+
+*🛍️ طلبات الشراء:*
+\`.شراء (النص)\` - إرسال طلب شراء
+\`.طلبات on/off\` - قروب الطلبات (مطور)
 
 *⚙️ الإدارة:*
 \`.سجل @user (اللقب)\` - تسجيل عضو
@@ -167,6 +154,7 @@ const FULL_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر⊱⏣═━━�
 \`.حسبة\` - حفظ التفاعل
 \`.حسبة on/off\` - تفعيل العدّاد
 \`.حظر @user (مدة)\` - حظر عضو (سماح 1)
+\`.مراقب @user\` - تعيين مراقب المخالفات (مطور)
 
 *🛡️ الحماية:*
 \`.حماية on/off\` - حماية البطاقات
@@ -183,20 +171,26 @@ const FULL_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر⊱⏣═━━�
 \`.رابط الاعلانات (URL)\` - رابط الإعلانات
 \`.رابط المتجر (URL)\` - رابط المتجر
 \`.صورة (اللقب)\` - حفظ صورة عضو
-\`.نتائج\` - عرض النتائج
+\`.نتائج\` - عرض النتائج (سماح 5)
 \`.نتائج 0\` - تصفير النتائج
-\`.طلبات on/off\` - قروب طلبات الشراء
+
+*👑 هوية البوتات:*
+\`.انا بوت (إيموجي)\` - تعيين هوية البوت
+\`.حذف نقابتك @bot\` - حذف هوية بوت (إمبراطور)
+\`.مؤبد\` (رد على استمارة) - حفظ عضو مؤبد
+\`.اعفاء\` (رد على استمارة) - فك المؤبد
 
 *💾 أخرى:*
 \`.تنظيف\` - حذف 30 رسالة
 \`.حفظ on/off\` - الحفظ التلقائي
 \`.استراحة\` - إيقاف الفعاليات
 \`.وقف\` - إيقاف جميع الفعاليات
+\`.548484\` - تفعيل منشئ المزاد (مطور)
 
 _*❆━━━━═⏣⊰اوامر⊱⏣═━━━━❆*_`;
 
 // ============================================================
-// قائمة أوامر قروب البنك
+// قائمة أوامر البنك
 // ============================================================
 
 const BANK_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر البنك⊱⏣═━━━━❆*_
@@ -210,6 +204,25 @@ const BANK_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر البنك⊱�
 \`.تحويل الى (لقب) (مبلغ)\` - تحويل رصيد
 \`.القاب\` - قائمة الألقاب المسجلة
 \`.من (اللقب)\` - معرفة صاحب اللقب
+\`.تفاصيله @user\` - عرض بيانات عضو
+
+*🛍️ طلبات الشراء:*
+\`.شراء (النص)\` - إرسال طلب شراء
+
+_*❆━━━━═⏣⊰اوامر⊱⏣═━━━━❆*_`;
+
+// ============================================================
+// قائمة أوامر قروب العمل
+// ============================================================
+
+const WORK_COMMANDS_LIST = `_*❆━━━━═⏣⊰اوامر قروب العمل⊱⏣═━━━━❆*_
+
+*⚙️ أوامر العمل:*
+\`.طرف @user (الطرف)\` - إرسال استمارة وورك
+\`.ورك on/off\` - تفعيل/إيقاف العمل
+\`.تعدد on/off\` - تفعيل نظام تعدد البوتات
+\`.مؤبد\` (رد على استمارة) - حفظ عضو مؤبد
+\`.اعفاء\` (رد على استمارة) - فك المؤبد
 
 _*❆━━━━═⏣⊰اوامر⊱⏣═━━━━❆*_`;
 
@@ -219,9 +232,6 @@ _*❆━━━━═⏣⊰اوامر⊱⏣═━━━━❆*_`;
 
 async function handleCommandsList(sock, jid, msg, db, cleanSender, isBotOwner) {
     try {
-        // ============================================
-        // 1) التحقق من الصلاحيات
-        // ============================================
         if (!hasAdminPerm(db, cleanSender, isBotOwner)) {
             await safeSend(sock, jid, {
                 text: "⛔ هذا الأمر يحتاج صلاحيات إدارية (.سماح)."
@@ -229,31 +239,24 @@ async function handleCommandsList(sock, jid, msg, db, cleanSender, isBotOwner) {
             return true;
         }
 
-        // ============================================
-        // 2) تحديد القائمة حسب نوع القروب
-        // ============================================
         const isAds = isAdsGroup(db, jid);
         const isMain = isMainGroup(db, jid);
         const isBank = isBankGroup(db, jid);
+        const isWork = isWorkGroup(db, jid);
 
         let text;
 
-        if (isBank) {
-            // قائمة أوامر البنك
+        if (isWork) {
+            text = WORK_COMMANDS_LIST;
+        } else if (isBank) {
             text = BANK_COMMANDS_LIST;
         } else if (isAds || isMain) {
-            // قائمة مختصرة
             text = SHORT_COMMANDS_LIST;
         } else {
-            // قائمة كاملة
             text = FULL_COMMANDS_LIST;
         }
 
-        // ============================================
-        // 3) إرسال الرسالة
-        // ============================================
         await safeSend(sock, jid, { text }, { quoted: msg });
-
         return true;
 
     } catch (error) {
@@ -261,10 +264,6 @@ async function handleCommandsList(sock, jid, msg, db, cleanSender, isBotOwner) {
         return false;
     }
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     handleCommandsList,
@@ -275,5 +274,6 @@ module.exports = {
     isWorkGroup,
     SHORT_COMMANDS_LIST,
     FULL_COMMANDS_LIST,
-    BANK_COMMANDS_LIST
+    BANK_COMMANDS_LIST,
+    WORK_COMMANDS_LIST
 };

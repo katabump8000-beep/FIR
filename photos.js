@@ -1,21 +1,23 @@
 // ============================================================
 // photos.js
 // ALJESAT BOT
-// نظام حفظ الصور والألقاب لعضو قروب الاستقبال
+// نظام حفظ الصور والألقاب لقروب الاستقبال
+// نسخة محدّثة: دعم LID
 // ============================================================
 
 "use strict";
 
 const path = require("path");
 const fs = require("fs");
-const crypto = require("crypto");
+
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention, getRealMentionedJids } = require("./bot");
 
 // ============================================================
-// مجلد حفظ الصور
+// مجلد الصور
 // ============================================================
 
 const PHOTOS_FOLDER = path.join(__dirname, "user_photos");
-
 if (!fs.existsSync(PHOTOS_FOLDER)) {
     fs.mkdirSync(PHOTOS_FOLDER, { recursive: true });
 }
@@ -24,18 +26,9 @@ if (!fs.existsSync(PHOTOS_FOLDER)) {
 // أدوات مساعدة
 // ============================================================
 
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/[^0-9]/g, "");
-}
-
 function cleanJid(value) {
     if (!value) return "";
     return String(value).split(":")[0];
-}
-
-function jidToNumber(value) {
-    return cleanNumber(cleanJid(value));
 }
 
 function normalizeText(text) {
@@ -53,9 +46,6 @@ async function safeSend(sock, jid, content, options = {}) {
     return sock.sendMessage(jid, content, options).catch(() => null);
 }
 
-/**
- * استخراج الصورة المقتبسة من الرسالة
- */
 function getQuotedImage(msg) {
     try {
         const contextInfo = msg?.message?.extendedTextMessage?.contextInfo;
@@ -75,16 +65,10 @@ function getQuotedImage(msg) {
                 }
             };
         }
-
         return null;
-    } catch {
-        return null;
-    }
+    } catch { return null; }
 }
 
-/**
- * استخراج نص الرسالة
- */
 function getMessageText(msg) {
     if (!msg || !msg.message) return "";
     const m = msg.message;
@@ -98,24 +82,15 @@ function getMessageText(msg) {
     ).trim();
 }
 
-/**
- * الحصول على جلسة القروب الاستقبالية
- */
 function isReceiveGroup(db, jid) {
     return Boolean(db.receiveGroups && db.receiveGroups[jid]);
 }
 
-/**
- * الحصول على الجلسات الأساسية
- */
 function getMainGroups(db) {
     if (!db.mainGroup) return [];
     return Object.keys(db.mainGroup).filter(jid => db.mainGroup[jid] === true);
 }
 
-/**
- * فحص هل العضو في أي قروب أساسي
- */
 async function isUserInMainGroup(sock, db, userNumber) {
     try {
         const mainGroups = getMainGroups(db);
@@ -127,7 +102,7 @@ async function isUserInMainGroup(sock, db, userNumber) {
                 if (!metadata) continue;
 
                 const found = metadata.participants.find(p => {
-                    const pid = cleanNumber(p.id);
+                    const pid = cleanNumber(String(p.id).split("@")[0]);
                     return pid === userNumber;
                 });
 
@@ -135,14 +110,9 @@ async function isUserInMainGroup(sock, db, userNumber) {
             } catch (_) {}
         }
         return false;
-    } catch {
-        return false;
-    }
+    } catch { return false; }
 }
 
-/**
- * البحث عن عضو مسجل باللقب (من db.users)
- */
 function findUserByNickname(db, nickname) {
     const norm = normalizeText(nickname);
     if (!norm) return null;
@@ -150,7 +120,6 @@ function findUserByNickname(db, nickname) {
     for (const number of Object.keys(db.users || {})) {
         const user = db.users[number];
         if (!user) continue;
-
         const userNick = normalizeText(user.nickname);
         if (userNick && userNick === norm) {
             return { number, user };
@@ -159,10 +128,6 @@ function findUserByNickname(db, nickname) {
     return null;
 }
 
-/**
- * فحص هل الصورة محفوظة سابقاً
- * نقارن بالحجم والنوع (لأن المقارنة بالبافر الكامل ثقيلة)
- */
 function isImageAlreadySaved(db, imageMessage) {
     if (!imageMessage) return false;
 
@@ -175,60 +140,40 @@ function isImageAlreadySaved(db, imageMessage) {
         const entry = db.userPhotos[userNumber];
         if (!entry) continue;
 
-        // مقارنة بالـ fileSha256 إذا موجودة (أدق)
         if (newSha256 && entry.fileSha256) {
             if (entry.fileSha256 === newSha256) {
                 return { userNumber, entry };
             }
         } else if (newFileLength > 0 && entry.fileLength === newFileLength) {
-            // مقارنة بالحجم كحل بديل
             return { userNumber, entry };
         }
     }
-
     return false;
 }
 
-/**
- * تحميل الصورة من واتساب وحفظها محلياً
- */
 async function downloadAndSaveImage(sock, imageMessage, userNumber) {
     try {
         const { downloadMediaMessage } = require("@whiskeysockets/baileys");
 
-        // نبني رسالة وهمية لتحميل الصورة
         const fakeMsg = {
-            key: {
-                remoteJid: "x@s.whatsapp.net",
-                fromMe: false,
-                id: "x"
-            },
-            message: {
-                imageMessage: imageMessage
-            }
+            key: { remoteJid: "x@s.whatsapp.net", fromMe: false, id: "x" },
+            message: { imageMessage: imageMessage }
         };
 
         const buffer = await downloadMediaMessage(
-            fakeMsg,
-            "buffer",
-            {},
-            {
-                logger: console,
-                reuploadRequest: sock.updateMediaMessage
-            }
+            fakeMsg, "buffer", {},
+            { logger: console, reuploadRequest: sock.updateMediaMessage }
         );
 
         if (!buffer || buffer.length === 0) {
             throw new Error("الصورة فارغة أو فشل التحميل");
         }
 
-        // حفظ الصورة
         const ext = imageMessage.mimetype?.includes("png") ? "png" : "jpg";
         const filename = `${userNumber}_${Date.now()}.${ext}`;
         const filePath = path.join(PHOTOS_FOLDER, filename);
 
         fs.writeFileSync(filePath, buffer);
-
         return { filePath, filename, size: buffer.length };
 
     } catch (error) {
@@ -238,23 +183,12 @@ async function downloadAndSaveImage(sock, imageMessage, userNumber) {
 }
 
 // ============================================================
-// المعالجة الرئيسية لأمر .صورة
+// .صورة
 // ============================================================
 
-async function handlePhotoCommand(
-    sock,
-    jid,
-    msg,
-    text,
-    db,
-    saveDb,
-    cleanSender,
-    isBotOwner
-) {
+async function handlePhotoCommand(sock, jid, msg, text, db, saveDb, cleanSender, isBotOwner) {
     try {
-        // ============================================
-        // 1) التحقق من أن القروب قروب استقبال
-        // ============================================
+        // 1) قروب استقبال
         if (!isReceiveGroup(db, jid)) {
             await safeSend(sock, jid, {
                 text: `❆━━━━━═⏣⊰⚠️⊱⏣═━━━━━❆
@@ -265,10 +199,7 @@ async function handlePhotoCommand(
             return true;
         }
 
-        // ============================================
-        // 2) التحقق من الصلاحيات (مستعمل .سجل)
-        // ============================================
-        // من يستطيع: من لديه صلاحية 2 (سجل) أو المالك
+        // 2) الصلاحيات
         const permissions = db.permissions || {};
         const hasRegisterPerm = 
             isBotOwner || 
@@ -285,11 +216,8 @@ async function handlePhotoCommand(
             return true;
         }
 
-        // ============================================
-        // 3) استخراج اللقب من الأمر
-        // ============================================
+        // 3) اللقب
         const parts = text.split(/\s+/);
-        // parts[0] = ".صورة"
         const nickname = parts.slice(1).join(" ").trim();
 
         if (!nickname) {
@@ -302,11 +230,8 @@ async function handlePhotoCommand(
             return true;
         }
 
-        // ============================================
-        // 4) التحقق من وجود صورة مقتبسة
-        // ============================================
+        // 4) الصورة المقتبسة
         const quoted = getQuotedImage(msg);
-
         if (!quoted || !quoted.imageMessage) {
             await safeSend(sock, jid, {
                 text: `❆━━━━━═⏣⊰⚠️⊱⏣═━━━━━❆
@@ -318,11 +243,8 @@ async function handlePhotoCommand(
 
         const imageMessage = quoted.imageMessage;
 
-        // ============================================
-        // 5) البحث عن العضو صاحب اللقب
-        // ============================================
+        // 5) البحث عن العضو
         const foundUser = findUserByNickname(db, nickname);
-
         if (!foundUser) {
             await safeSend(sock, jid, {
                 text: `❆━━━━━═⏣⊰⚠️⊱⏣═━━━━━❆
@@ -337,11 +259,8 @@ async function handlePhotoCommand(
 
         const targetNumber = foundUser.number;
 
-        // ============================================
-        // 6) التحقق هل الصورة محفوظة سابقاً
-        // ============================================
+        // 6) محفوظة سابقاً؟
         const alreadySaved = isImageAlreadySaved(db, imageMessage);
-
         if (alreadySaved) {
             const savedUser = db.users?.[alreadySaved.userNumber];
             const savedNickname = savedUser?.nickname || alreadySaved.userNumber;
@@ -356,11 +275,8 @@ async function handlePhotoCommand(
             return true;
         }
 
-        // ============================================
-        // 7) التحقق هل العضو موجود في القروب الأساسي
-        // ============================================
+        // 7) في الأساسي؟
         const isInMain = await isUserInMainGroup(sock, db, targetNumber);
-
         if (isInMain) {
             await safeSend(sock, jid, {
                 text: `❆━━━━━═⏣⊰⚠️⊱⏣═━━━━━❆
@@ -373,11 +289,8 @@ async function handlePhotoCommand(
             return true;
         }
 
-        // ============================================
-        // 8) تحميل وحفظ الصورة
-        // ============================================
+        // 8) التحميل
         const saveResult = await downloadAndSaveImage(sock, imageMessage, targetNumber);
-
         if (!saveResult) {
             await safeSend(sock, jid, {
                 text: `❆━━━━━═⏣⊰⚠️⊱⏣═━━━━━❆
@@ -388,9 +301,7 @@ async function handlePhotoCommand(
             return true;
         }
 
-        // ============================================
-        // 9) حفظ البيانات في قاعدة البيانات
-        // ============================================
+        // 9) حفظ البيانات
         db.userPhotos = db.userPhotos || {};
         db.userPhotos[targetNumber] = {
             nickname: foundUser.user.nickname,
@@ -406,15 +317,9 @@ async function handlePhotoCommand(
 
         if (typeof saveDb === "function") saveDb();
 
-        // ============================================
-        // 10) رسالة النجاح
-        // ============================================
-        await safeSend(sock, jid, {
-            text: `◆━─⊱✅نجح✅⊰─━◆`
-        }, { quoted: msg });
+        await safeSend(sock, jid, { text: `◆━─⊱✅نجح✅⊰─━◆` }, { quoted: msg });
 
         console.log(`✅ تم حفظ صورة للعضو ${targetNumber} (${foundUser.user.nickname})`);
-
         return true;
 
     } catch (error) {
@@ -427,31 +332,21 @@ async function handlePhotoCommand(
 // دوال مساعدة مُصدَّرة
 // ============================================================
 
-/**
- * الحصول على صورة عضو (من قاعدة البيانات)
- */
 function getPhoto(db, userNumber) {
     if (!db || !db.userPhotos) return null;
     return db.userPhotos[userNumber] || null;
 }
 
-/**
- * فحص هل العضو لديه صورة محفوظة
- */
 function hasPhoto(db, userNumber) {
     if (!db || !db.userPhotos) return false;
     return Boolean(db.userPhotos[userNumber]);
 }
 
-/**
- * حذف صورة عضو (عند خروجه من القروب الأساسي مثلاً)
- */
 function removePhoto(db, userNumber, saveDb) {
     if (!db || !db.userPhotos || !db.userPhotos[userNumber]) return false;
 
     const entry = db.userPhotos[userNumber];
 
-    // حذف الملف
     try {
         if (entry.filePath && fs.existsSync(entry.filePath)) {
             fs.unlinkSync(entry.filePath);
@@ -460,24 +355,14 @@ function removePhoto(db, userNumber, saveDb) {
         console.warn("⚠️ فشل حذف ملف الصورة:", err?.message);
     }
 
-    // حذف من قاعدة البيانات
     delete db.userPhotos[userNumber];
-
     if (typeof saveDb === "function") saveDb();
-
     return true;
 }
 
-/**
- * الحصول على مسار مجلد الصور
- */
 function getPhotosFolder() {
     return PHOTOS_FOLDER;
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     handlePhotoCommand,

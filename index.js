@@ -1,7 +1,8 @@
 // ============================================================
 // index.js
-// ALJESAT BOT — Main Entry Point
-// نسخة محدّثة: list-response، متجر، مزاد، هوية بوتات، حظر، شراء
+// ALJESAT BOT — Main Entry Point (FINAL)
+// نسخة نهائية متوافقة مع جميع الملفات
+// دعم LID + list-response + reply-to-list + ads monitoring
 // ============================================================
 
 "use strict";
@@ -46,7 +47,10 @@ console.warn = (...args) => { if (logGuard.canLog()) _originalWarn(...args); };
 
 const {
     startBot, configureHandlers, getDb, saveDb,
-    jidToNumber, isGroupJid, isOwner, cleanNumber
+    jidToNumber, isGroupJid, isOwner, cleanNumber,
+    getSenderNumber, getSenderJid,
+    getRealMentionedJid, getRealMentionedJids,
+    buildSafeMention, isValidPnJid
 } = require("./bot");
 
 const { handleCommand, isUserBanned, formatBanDuration } = require("./commands");
@@ -110,6 +114,15 @@ const REACT_EMOJIS = [
     "🍯", "🐥", "👻", "🍅"
 ];
 
+const VALID_GAME_COMMANDS = [
+    "تفكيك", "كتابة", "الوان", "الحيوانات",
+    "اعلام", "ايموجي", "تخمين", "روليت", "اتبع حدسك"
+];
+
+// ============================================================
+// شبكة أمان
+// ============================================================
+
 let lastExceptionAt = 0;
 const EXCEPTION_COOLDOWN_MS = 5000;
 
@@ -141,16 +154,27 @@ function getMessageTextFromMsg(msg) {
         message.videoMessage?.caption ||
         message.documentMessage?.caption ||
         message.buttonsResponseMessage?.selectedButtonId ||
+        message.buttonsResponseMessage?.selectedDisplayText ||
         message.listResponseMessage?.singleSelectReply?.selectedRowId ||
         message.templateButtonReplyMessage?.selectedId ||
         ""
     ).trim();
 }
 
+/**
+ * ⭐ getSender يدعم LID
+ */
 function getSender(msg, sock) {
     try {
         if (msg?.key?.fromMe) return sock?.user?.id || "";
-        return msg?.key?.participant || msg?.key?.remoteJid || "";
+        return (
+            msg?.key?.participantPn ||
+            msg?.key?.participant_pn ||
+            msg?.key?.senderPn ||
+            msg?.key?.participant ||
+            msg?.key?.remoteJid ||
+            ""
+        );
     } catch { return ""; }
 }
 
@@ -234,7 +258,7 @@ function stopAutoSave() {
 }
 
 // ============================================================
-// الردود التلقائية + التفاعل + الحماية + مراقبة المخالفات
+// الردود التلقائية + مراقبة المخالفات (دعم LID)
 // ============================================================
 
 async function handleAutoReplies(sock, jid, msg, text, sender, cleanSender, db, saveDb) {
@@ -262,19 +286,27 @@ async function handleAutoReplies(sock, jid, msg, text, sender, cleanSender, db, 
             if (msgContent.contactMessage || msgContent.contactsArrayMessage) {
                 try { await sock.sendMessage(jid, { delete: msg.key }); } catch (_) {}
                 try {
-                    const senderJid = msg?.key?.participant || msg?.key?.remoteJid;
+                    const senderJid = getSenderJid(msg, sock);
                     if (senderJid) await sock.groupParticipantsUpdate(jid, [senderJid], "remove");
                 } catch (_) {}
                 return;
             }
         }
 
-        // 🆕 مراقبة المخالفات
+        // مراقبة المخالفات
         if (db.monitors && db.monitors[cleanSender]) {
             if (text.includes("مخالفة") || text.includes("مــخــالــفــة")) {
-                const mentionMatch = text.match(/العضو:\s*@(\d+)/) || text.match(/@(\d+)/);
-                if (mentionMatch) {
-                    const violatedNumber = cleanNumber(mentionMatch[1]);
+                const mentionedJids = getRealMentionedJids(msg);
+                let violatedNumber = "";
+
+                if (mentionedJids[0]) {
+                    violatedNumber = cleanNumber(String(mentionedJids[0]).split("@")[0]);
+                } else {
+                    const m = text.match(/العضو:\s*@(\d+)/) || text.match(/@(\d+)/);
+                    if (m) violatedNumber = cleanNumber(m[1]);
+                }
+
+                if (violatedNumber) {
                     const violatedUser = db.users?.[violatedNumber];
                     if (violatedUser) {
                         const TAX = 100;
@@ -282,14 +314,17 @@ async function handleAutoReplies(sock, jid, msg, text, sender, cleanSender, db, 
                         let newBalance = balance - TAX;
                         violatedUser.balance = newBalance;
                         saveDb();
+
                         const nick = violatedUser.nickname || violatedNumber;
+                        const violatedJid = `${violatedNumber}@s.whatsapp.net`;
+
                         await sock.sendMessage(jid, {
                             text: `•┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈•
 تم خصم رصيد من العضو: 
 [ \`${nick}\` ]  قيمة الضريبة:  ${TAX}
 السبب:  ارتكاب مخالفة
 •┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈•`,
-                            mentions: [`${violatedNumber}@s.whatsapp.net`]
+                            mentions: [violatedJid]
                         }).catch(() => {});
 
                         if (newBalance < 0) {
@@ -304,7 +339,7 @@ async function handleAutoReplies(sock, jid, msg, text, sender, cleanSender, db, 
 نود اعلامك بأن عليك دفع سلفة في رصيدك  لانه قد اصبح عليك كسر
 بقيمة: \`-${deficit}\`
 ═════════════════`,
-                                    mentions: [`${violatedNumber}@s.whatsapp.net`]
+                                    mentions: [violatedJid]
                                 }).catch(() => {});
                             }
                         }
@@ -429,7 +464,7 @@ function stopSingleGame(entry) {
 }
 
 // ============================================================
-// نظام الاستراحة
+// الاستراحة
 // ============================================================
 
 const restRequests = Object.create(null);
@@ -542,27 +577,29 @@ function stopWatchdog() {
 }
 
 // ============================================================
-// ⭐ معالجة انضمام العضو للقروب الأساسي
+// ⭐ انضمام العضو للقروب الأساسي (دعم LID)
 // ============================================================
 
 async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
     try {
         if (!db.mainGroup || db.mainGroup[groupJid] !== true) return;
 
-        const userNumber = cleanNumber(participant);
+        const userNumber = cleanNumber(String(participant).split("@")[0]);
         if (!userNumber) return;
 
-        // ⭐ فحص المؤبد
+        const safeJid = buildSafeMention(participant) || `${userNumber}@s.whatsapp.net`;
+
+        // فحص المؤبد
         if (botIdentityModule && botIdentityModule.isPermanentMember(db, userNumber)) {
             await sock.sendMessage(groupJid, {
                 text: `*⌬━─⟐─ ⊱•♨️•⊰ ─⟐─━⌬*
   انت محفوظ لدي مملكة النار
   بأنك مؤبد..  لهذا بص تحت: 
 *⌬━─⟐─ ⊱•♨️•⊰ ─⟐─━⌬*`,
-                mentions: [`${userNumber}@s.whatsapp.net`]
+                mentions: [safeJid]
             }).catch(() => {});
             try {
-                await sock.groupParticipantsUpdate(groupJid, [`${userNumber}@s.whatsapp.net`], "remove");
+                await sock.groupParticipantsUpdate(groupJid, [safeJid], "remove");
             } catch (_) {}
             return;
         }
@@ -577,13 +614,13 @@ async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
             } catch (e) { _originalError("sendWelcome error:", e?.message); }
         }
 
-        // 🆕 إعطاء 100 رصيد ترحيبي
+        // ⭐ 100 رصيد ترحيبي
         const user = db.users?.[userNumber];
         if (user) {
             user.balance = (Number(user.balance) || 0) + 100;
             if (typeof saveDb === "function") saveDb();
 
-            // رسالة الترحيب بالهدية — بعد دقيقة
+            // رسالة الهدية بعد دقيقة
             setTimeout(async () => {
                 await sock.sendMessage(groupJid, {
                     text: `♢┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈♢
@@ -593,11 +630,11 @@ async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
 *.تفاصيلي*
 لرؤية ملفك التعريفي ورصيدك... 
 ♢┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈♢`,
-                    mentions: [`${userNumber}@s.whatsapp.net`]
+                    mentions: [safeJid]
                 }).catch(() => {});
             }, 60 * 1000);
 
-            // 🆕 تفاصيله بعد 5 دقائق
+            // تفاصيله بعد 5 دقائق
             setTimeout(async () => {
                 const u = db.users?.[userNumber];
                 if (!u) return;
@@ -606,19 +643,22 @@ async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
                 const detailsText = "╗═════『   بياناتك  』═════╔\n\n💰 رصـــيـــــــدك:     `{" + (u.balance || 0) + "}`\n\n🏷️ لقبك:    `{" + dn + "}`\n\n🎖️ رتبتك:   `{" + (u.rank || "عضو") + "}`\n\n📈 أعلى تفاعل لك: `{" + (u.maxInteraction || 0) + "}`\n\n🫂 صـــديق:  `{" + fn + "}`\n╝════════════════════╚";
                 await sock.sendMessage(groupJid, {
                     text: detailsText,
-                    mentions: [`${userNumber}@s.whatsapp.net`]
+                    mentions: [safeJid]
                 }).catch(() => {});
             }, 5 * 60 * 1000);
         }
 
-        // إشعار قروبات الاستقبال — ⭐ منشن صحيح
+        // إشعار قروبات الاستقبال
         if (db.receiveGroups) {
             for (const recJid of Object.keys(db.receiveGroups)) {
                 if (!db.receiveGroups[recJid]) continue;
                 try {
                     const recMeta = await sock.groupMetadata(recJid).catch(() => null);
                     if (!recMeta) continue;
-                    const found = recMeta.participants.find(p => cleanNumber(p.id) === userNumber);
+                    const found = recMeta.participants.find(p => {
+                        const pNum = cleanNumber(String(p.id).split("@")[0]);
+                        return pNum === userNumber;
+                    });
                     if (found) {
                         await sock.sendMessage(recJid, {
                             text: `❆━━━━━═⏣⊰👤⊱⏣═━━━━━❆
@@ -627,9 +667,9 @@ async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
 دخولك القروب الاساسي..  بينما هذا 
 القروب انتهى عملك فيه هنا..  وداعا❤
 ❆━━━━━═⏣⊰🪪⊱⏣═━━━━━❆`,
-                            mentions: [`${userNumber}@s.whatsapp.net`]
+                            mentions: [safeJid]
                         }).catch(() => {});
-                        try { await sock.groupParticipantsUpdate(recJid, [`${userNumber}@s.whatsapp.net`], "remove"); } catch (_) {}
+                        try { await sock.groupParticipantsUpdate(recJid, [safeJid], "remove"); } catch (_) {}
                     }
                 } catch (_) {}
             }
@@ -638,7 +678,7 @@ async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
         // فحص النقابات
         if (botIdentityModule && db.workForms && db.workForms[userNumber]) {
             const workData = db.workForms[userNumber];
-            const nakabaName = workData.nakaba || "غير محددة";
+            const nakabaName = workData.nakaba || "غير محدد";
             try {
                 await botIdentityModule.alertAdminsAboutMember(sock, groupJid, userNumber, nakabaName, db);
             } catch (_) {}
@@ -648,41 +688,72 @@ async function handleMainGroupJoin(sock, groupJid, participant, db, saveDb) {
 }
 
 // ============================================================
-// ⭐ معالجة اختيار الألعاب من List Message — الأمر فقط
+// ⭐ معالجة اختيار الألعاب من List/Buttons Response
 // ============================================================
 
 async function handleGamesListSelection(sock, msg, jid, cleanSender, sender, isGroup, owner, botNumber, db) {
-    const listResponse = msg.message?.listResponseMessage;
-    if (!listResponse) return false;
+    const message = msg.message;
+    if (!message) return false;
 
-    const selectedRowId = String(listResponse.singleSelectReply?.selectedRowId || "").trim();
-    if (!selectedRowId) return true;
+    let selectedId = "";
 
-    const validCommands = ["تفكيك", "كتابة", "الوان", "الحيوانات", "اعلام", "ايموجي", "تخمين", "روليت", "اتبع حدسك"];
+    // 1. Interactive List Response
+    if (message.listResponseMessage) {
+        selectedId = String(message.listResponseMessage.singleSelectReply?.selectedRowId || "").trim();
+    }
+    // 2. Buttons Response
+    else if (message.buttonsResponseMessage) {
+        selectedId = String(message.buttonsResponseMessage.selectedButtonId ||
+                          message.buttonsResponseMessage.selectedDisplayText || "").trim();
+    }
+    // 3. Template Button Reply
+    else if (message.templateButtonReplyMessage) {
+        selectedId = String(message.templateButtonReplyMessage.selectedId || "").trim();
+    }
+
+    if (!selectedId) return false;
+
+    // ⭐ تحويل أي اختيار لأمر صحيح
     let matchedCmd = null;
-    for (const cmd of validCommands) {
-        if (selectedRowId === cmd || selectedRowId === "." + cmd) {
+
+    // هل هو أمر جاهز؟
+    for (const cmd of VALID_GAME_COMMANDS) {
+        if (selectedId === cmd ||
+            selectedId === "." + cmd ||
+            selectedId.includes(cmd)) {
             matchedCmd = cmd;
             break;
         }
     }
+
     if (!matchedCmd) return false;
 
+    // فحص وجود قائمة معلقة
     const pending = global.pendingGamesMenu && global.pendingGamesMenu[jid];
-    if (!pending || pending.sender !== cleanSender) {
-        await sock.sendMessage(jid, { text: "⚠️ هذه القائمة خاصة بصاحب الأمر `.العاب` فقط." }, { quoted: msg }).catch(() => {});
+    if (!pending) {
+        // لا قائمة معلقة - تجاهل
+        return false;
+    }
+
+    if (pending.sender !== cleanSender) {
+        await sock.sendMessage(jid, {
+            text: "⚠️ هذه القائمة خاصة بصاحب الأمر `.العاب` فقط."
+        }, { quoted: msg }).catch(() => {});
         return true;
     }
+
     if (Date.now() - pending.timestamp > 5 * 60 * 1000) {
         delete global.pendingGamesMenu[jid];
-        await sock.sendMessage(jid, { text: "⚠️ انتهت صلاحية القائمة، أعد كتابة `.العاب`." }, { quoted: msg }).catch(() => {});
+        await sock.sendMessage(jid, {
+            text: "⚠️ انتهت صلاحية القائمة، أعد كتابة `.العاب`."
+        }, { quoted: msg }).catch(() => {});
         return true;
     }
+
     delete global.pendingGamesMenu[jid];
 
     try { await sock.sendMessage(jid, { delete: msg.key }); } catch (_) {}
 
-    // ⭐ إرسال الأمر فقط
     const fakeText = "." + matchedCmd;
     try {
         const fakeMsg = { ...msg, message: { conversation: fakeText } };
@@ -691,7 +762,87 @@ async function handleGamesListSelection(sock, msg, jid, cleanSender, sender, isG
             isBotOwner: Boolean(owner), botNumber, text: fakeText
         });
     } catch (e) { _originalError("List response exec error:", e?.message); }
+
     return true;
+}
+
+// ============================================================
+// ⭐ مراقبة ردود على قائمة الألعاب (الرد بالمنشن/الريبلاي)
+// ============================================================
+
+async function handleGamesListReply(sock, msg, jid, cleanSender, sender, isGroup, owner, botNumber, db) {
+    try {
+        const ctx =
+            msg?.message?.extendedTextMessage?.contextInfo ||
+            msg?.message?.contextInfo ||
+            null;
+        if (!ctx) return false;
+
+        const quotedStanzaId = ctx.stanzaId;
+        if (!quotedStanzaId) return false;
+
+        const pending = global.pendingGamesMenu && global.pendingGamesMenu[jid];
+        if (!pending) return false;
+
+        // هل الرد على رسالة القائمة؟
+        const isReplyToList =
+            (pending.listMsgId && quotedStanzaId === pending.listMsgId) ||
+            (pending.headerMsgId && quotedStanzaId === pending.headerMsgId);
+
+        if (!isReplyToList) return false;
+
+        // النص
+        const text = (msg?.message?.conversation ||
+                      msg?.message?.extendedTextMessage?.text || "").trim();
+        if (!text) return false;
+
+        // نظف النص
+        let cleaned = text.replace(/^\./, "").trim();
+        if (!VALID_GAME_COMMANDS.includes(cleaned)) return false;
+
+        if (pending.sender !== cleanSender) {
+            await sock.sendMessage(jid, {
+                text: "⚠️ هذه القائمة خاصة بصاحب الأمر `.العاب` فقط."
+            }, { quoted: msg }).catch(() => {});
+            return true;
+        }
+
+        if (Date.now() - pending.timestamp > 5 * 60 * 1000) {
+            delete global.pendingGamesMenu[jid];
+            return false;
+        }
+
+        delete global.pendingGamesMenu[jid];
+
+        const fakeText = "." + cleaned;
+        try {
+            const fakeMsg = { ...msg, message: { conversation: fakeText } };
+            await handleCommand(sock, jid, fakeMsg, {
+                db, sender, cleanSender, isGroup,
+                isBotOwner: Boolean(owner), botNumber, text: fakeText
+            });
+        } catch (e) { _originalError("Reply-to-list error:", e?.message); }
+
+        return true;
+
+    } catch (e) {
+        _originalError("handleGamesListReply error:", e?.message);
+        return false;
+    }
+}
+
+// ============================================================
+// ⭐ مراقبة رسائل ADS (لتسجيل النتائج)
+// ============================================================
+
+async function handleAdsMonitoring(sock, jid, msg, db, saveDb) {
+    try {
+        if (!resultsModule || typeof resultsModule.handleAdsMessage !== "function") return false;
+        return await resultsModule.handleAdsMessage(sock, jid, msg, db, saveDb);
+    } catch (e) {
+        _originalError("Ads monitoring error:", e?.message);
+        return false;
+    }
 }
 
 // ============================================================
@@ -728,16 +879,26 @@ function createHandlers() {
                         const jid = msg?.key?.remoteJid;
                         if (!jid) continue;
 
+                        // ⭐ استخراج المرسل (LID support)
                         const sender = getSender(msg, sock);
-                        const cleanSender = jidToNumber(sender);
+                        const cleanSender = cleanNumber(String(sender).split("@")[0]);
                         const isGroup = isGroupJid(jid);
                         const botNumber = getBotNumber(sock);
                         const owner = isOwner(cleanSender, sock, msg);
 
-                        // معالجة قائمة الفعاليات أولاً
+                        const text = getMessageTextFromMsg(msg);
+
+                        // ⭐ مراقبة ADS أولاً
+                        if (isGroup && text) {
+                            try { await handleAdsMonitoring(sock, jid, msg, db, saveDb); } catch (_) {}
+                        }
+
+                        // ⭐ List/Buttons Response
                         if (await handleGamesListSelection(sock, msg, jid, cleanSender, sender, isGroup, owner, botNumber, db)) continue;
 
-                        const text = getMessageTextFromMsg(msg);
+                        // ⭐ Reply على رسالة القائمة
+                        if (await handleGamesListReply(sock, msg, jid, cleanSender, sender, isGroup, owner, botNumber, db)) continue;
+
                         if (!text) continue;
 
                         // رسالة غير أمر
@@ -931,18 +1092,20 @@ function createHandlers() {
                                 await sock.sendMessage(jid, { text: "⛔ هذا الأمر للمطور فقط." }, { quoted: msg });
                                 continue;
                             }
-                            const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-                            if (mentioned.length === 0) {
+                            const mentionedJids = getRealMentionedJids(msg);
+                            if (!mentionedJids.length) {
                                 await sock.sendMessage(jid, { text: "⚠️ يرجى منشن الشخص." }, { quoted: msg });
                                 continue;
                             }
-                            const target = cleanNumber(mentioned[0]);
+                            const targetJid = mentionedJids[0];
+                            const target = cleanNumber(String(targetJid).split("@")[0]);
+                            const safeJid = buildSafeMention(targetJid) || `${target}@s.whatsapp.net`;
                             db.emperors = db.emperors || {};
                             db.emperors[target] = true;
                             saveDb();
                             await sock.sendMessage(jid, {
                                 text: `👑 تم تعيين @${target} كامبراطور.`,
-                                mentions: mentioned
+                                mentions: [safeJid]
                             }, { quoted: msg });
                             continue;
                         }
@@ -1121,7 +1284,9 @@ function createHandlers() {
                     for (const participant of update.participants) {
                         await handleMainGroupJoin(sock, update.id, participant, db, saveDb);
 
-                        const userNum = cleanNumber(participant);
+                        const userNum = cleanNumber(String(participant).split("@")[0]);
+                        const safeJid = buildSafeMention(participant) || `${userNum}@s.whatsapp.net`;
+
                         if (botIdentityModule && botIdentityModule.isPermanentMember(db, userNum)) {
                             if (db.receiveGroups && db.receiveGroups[update.id]) {
                                 await sock.sendMessage(update.id, {
@@ -1129,10 +1294,10 @@ function createHandlers() {
   انت محفوظ لدي مملكة النار
   بأنك مؤبد..  لهذا بص تحت: 
 *⌬━─⟐─ ⊱•♨️•⊰ ─⟐─━⌬*`,
-                                    mentions: [`${userNum}@s.whatsapp.net`]
+                                    mentions: [safeJid]
                                 }).catch(() => {});
                                 try {
-                                    await sock.groupParticipantsUpdate(update.id, [`${userNum}@s.whatsapp.net`], "remove");
+                                    await sock.groupParticipantsUpdate(update.id, [safeJid], "remove");
                                 } catch (_) {}
                             }
                         }

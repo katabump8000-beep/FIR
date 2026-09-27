@@ -2,7 +2,7 @@
 // admin.js
 // ALJESAT BOT
 // أوامر الإدارة والصلاحيات ومراقبة الإشراف
-// نسخة محدّثة: إصلاح المنشن + حذف تنظيم + إضافة أساسي
+// نسخة محدّثة: دعم LID + participantPn + منشن صحيح
 // ============================================================
 
 "use strict";
@@ -16,28 +16,30 @@ const DB_FILE = path.join(__dirname, "database.json");
 let adminMonitorInterval = null;
 let isMonitoringActive = false;
 
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/[^0-9]/g, "");
-}
+// ⭐ استيراد دوال LID من bot.js
+const {
+    cleanNumber, jidToNumber,
+    getRealMentionedJid, getRealMentionedJids,
+    buildSafeMention, isValidPnJid
+} = require("./bot");
 
 function cleanJid(value) {
     if (!value) return "";
     return String(value).split(":")[0];
 }
 
-function jidToNumber(value) {
-    return cleanNumber(cleanJid(value));
+/**
+ * ⭐ getMentionedJid محدّثة — تدعم LID
+ */
+function getMentionedJid(msg) {
+    return getRealMentionedJid(msg);
 }
 
-function getMentionedJid(msg) {
-    try {
-        return msg?.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
-            msg?.message?.contextInfo?.mentionedJid?.[0] ||
-            null;
-    } catch {
-        return null;
-    }
+/**
+ * ⭐ getMentionedJids محدّثة — كل المنشنين
+ */
+function getMentionedJids(msg) {
+    return getRealMentionedJids(msg);
 }
 
 function isAdmin(participant) {
@@ -99,7 +101,7 @@ function getCurrentAdmins(participants) {
         .filter(isAdmin)
         .map((participant) => {
             const id = participant.id || "";
-            return cleanNumber(id.split("@")[0] || id);
+            return cleanNumber(String(id).split("@")[0] || id);
         })
         .filter(Boolean);
 }
@@ -107,10 +109,10 @@ function getCurrentAdmins(participants) {
 function getActorFromUpdate(update) {
     try {
         if (update?.author) {
-            return cleanNumber(update.author.split("@")[0] || update.author);
+            return cleanNumber(String(update.author).split("@")[0] || update.author);
         }
         if (update?.actor) {
-            return cleanNumber(update.actor.split("@")[0] || update.actor);
+            return cleanNumber(String(update.actor).split("@")[0] || update.actor);
         }
         return null;
     } catch {
@@ -170,12 +172,12 @@ function startAdminMonitoring(sock, db, saveDb) {
             }
 
             const botId = sock?.user?.id || "";
-            const botNumber = cleanNumber(botId.split("@")[0] || botId);
+            const botNumber = cleanNumber(String(botId).split("@")[0] || botId);
 
             const botParticipant = allParticipants.find(
                 (participant) => {
-                    const id = participant.id || "";
-                    return cleanNumber(id.split("@")[0] || id) === botNumber;
+                    const pid = participant.id || "";
+                    return cleanNumber(String(pid).split("@")[0] || pid) === botNumber;
                 }
             );
 
@@ -188,8 +190,9 @@ function startAdminMonitoring(sock, db, saveDb) {
             if (actor === lostAdmin) return;
 
             try {
-                const actorJid = `${cleanNumber(actor)}@s.whatsapp.net`;
-                const lostAdminJid = `${cleanNumber(lostAdmin)}@s.whatsapp.net`;
+                // ⭐ بناء منشن آمن
+                const actorJid = buildSafeMention(actor) || `${cleanNumber(actor)}@s.whatsapp.net`;
+                const lostAdminJid = buildSafeMention(lostAdmin) || `${cleanNumber(lostAdmin)}@s.whatsapp.net`;
 
                 await sock.groupParticipantsUpdate(id, [actorJid], "demote");
                 await sock.groupParticipantsUpdate(id, [lostAdminJid], "promote");
@@ -253,14 +256,12 @@ async function handleGroupJoin(sock, update, db, saveDb) {
 
     const isMain = Boolean(db.mainGroup && db.mainGroup[id] === true);
 
-    // ============================================
-    // 🆕 حذف اللقب عند الخروج من القروب الأساسي
-    // ============================================
+    // حذف اللقب عند الخروج من القروب الأساسي
     if (action === "remove" && isMain) {
         try {
             let changed = false;
             for (const participant of participants) {
-                const cleanNum = cleanNumber(participant);
+                const cleanNum = cleanNumber(String(participant).split("@")[0]);
                 if (!cleanNum) continue;
 
                 const user = db.users && db.users[cleanNum];
@@ -281,23 +282,23 @@ async function handleGroupJoin(sock, update, db, saveDb) {
         }
     }
 
-    // ============================================
     // رسائل الاستقبال
-    // ============================================
     if (action !== "add") return false;
 
     const receiveGroups = db.receiveGroups || {};
     if (!receiveGroups[id]) return false;
 
     for (const participant of participants) {
-        const cleanNum = cleanNumber(participant);
+        const cleanNum = cleanNumber(String(participant).split("@")[0]);
         if (!cleanNum) continue;
 
-        // ⭐ إصلاح المنشن: استخدام رقم صافي بدل @lid
+        // ⭐ منشن صحيح عبر buildSafeMention
+        const safeJid = buildSafeMention(participant) || `${cleanNum}@s.whatsapp.net`;
+
         const welcomeMessage = messages.admin.receive.welcome(cleanNum);
         await sock.sendMessage(id, {
             text: welcomeMessage,
-            mentions: [`${cleanNum}@s.whatsapp.net`]
+            mentions: [safeJid]
         }).catch(() => {});
     }
 
@@ -348,14 +349,17 @@ async function handleAdminCommand(
         }
 
         const permissionType = String(parts?.[0] || "");
-        const mentioned = getMentionedJid(msg);
+        // ⭐ منشن صحيح
+        const mentionedJids = getMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
 
         if (!["1", "2", "3", "4", "5"].includes(permissionType) || !mentioned) {
             await send(sock, jid, messages.admin.invalidUsage(".سماح", "[1/2/3/4/5] @user"), msg);
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentioned).split("@")[0]);
+        const targetJid = buildSafeMention(mentioned) || `${target}@s.whatsapp.net`;
         const permissions = ensurePermissions(db);
 
         if (permissionType === "5") {
@@ -377,7 +381,7 @@ async function handleAdminCommand(
  من رصيد، سجل، رتبته، تفاعله، فعاليات، كازينو، مزاد... إلخ
 👑◈══════════════◈👑`,
                 msg,
-                { mentions: [mentioned] }
+                { mentions: [targetJid] }
             );
             return true;
         }
@@ -394,7 +398,7 @@ async function handleAdminCommand(
             "4": ".تفاعله"
         };
 
-        await send(sock, jid, messages.admin.permissions.granted(commandNames[permissionType], target), msg, { mentions: [mentioned] });
+        await send(sock, jid, messages.admin.permissions.granted(commandNames[permissionType], target), msg, { mentions: [targetJid] });
         return true;
     }
 
@@ -403,7 +407,7 @@ async function handleAdminCommand(
     // ========================================================
     if (command === "صلاحيات") {
         const botId = sock?.user?.id || "";
-        const botNumber = cleanNumber(botId.split("@")[0] || botId);
+        const botNumber = cleanNumber(String(botId).split("@")[0] || botId);
 
         const senderClean = cleanNumber(sender);
         if (senderClean !== botNumber) {
@@ -411,24 +415,26 @@ async function handleAdminCommand(
             return true;
         }
 
-        const mentioned = getMentionedJid(msg);
+        const mentionedJids = getMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
         if (!mentioned) {
             await send(sock, jid, messages.admin.invalidUsage(".صلاحيات", "@user"), msg);
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentioned).split("@")[0]);
+        const targetJid = buildSafeMention(mentioned) || `${target}@s.whatsapp.net`;
         db.gamePermissions = Array.isArray(db.gamePermissions) ? db.gamePermissions : [];
         const index = db.gamePermissions.indexOf(target);
 
         if (index === -1) {
             db.gamePermissions.push(target);
             doSave();
-            await send(sock, jid, messages.admin.gamePerms.granted(target), msg, { mentions: [mentioned] });
+            await send(sock, jid, messages.admin.gamePerms.granted(target), msg, { mentions: [targetJid] });
         } else {
             db.gamePermissions.splice(index, 1);
             doSave();
-            await send(sock, jid, messages.admin.gamePerms.revoked(target), msg, { mentions: [mentioned] });
+            await send(sock, jid, messages.admin.gamePerms.revoked(target), msg, { mentions: [targetJid] });
         }
         return true;
     }
@@ -438,7 +444,7 @@ async function handleAdminCommand(
     // ========================================================
     if (command === "بوت") {
         const botId = sock?.user?.id || "";
-        const botNumber = cleanNumber(botId.split("@")[0] || botId);
+        const botNumber = cleanNumber(String(botId).split("@")[0] || botId);
 
         const senderClean = cleanNumber(sender);
         if (senderClean !== botNumber) {
@@ -451,13 +457,15 @@ async function handleAdminCommand(
             return true;
         }
 
-        const mentioned = getMentionedJid(msg);
+        const mentionedJids = getMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
         if (!mentioned) {
             await send(sock, jid, messages.admin.invalidUsage(".بوت", "@user"), msg);
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentioned).split("@")[0]);
+        const targetJid = buildSafeMention(mentioned) || `${target}@s.whatsapp.net`;
         db.monitoredUsers = db.monitoredUsers && typeof db.monitoredUsers === "object" ? db.monitoredUsers : {};
         db.monitoredUsers[jid] = Array.isArray(db.monitoredUsers[jid]) ? db.monitoredUsers[jid] : [];
 
@@ -471,12 +479,12 @@ async function handleAdminCommand(
             await send(sock, jid,
                 `🔰 تم تفعيل مراقبة وحماية الإشراف للعضو @${target}\n\n📌 سيتم مراقبة إشرافه في هذه المجموعة.`,
                 msg,
-                { mentions: [mentioned] }
+                { mentions: [targetJid] }
             );
         } else {
             db.monitoredUsers[jid] = monitored.filter((number) => number !== target);
             doSave();
-            await send(sock, jid, messages.admin.monitor.deactivated(target), msg, { mentions: [mentioned] });
+            await send(sock, jid, messages.admin.monitor.deactivated(target), msg, { mentions: [targetJid] });
         }
         return true;
     }
@@ -490,13 +498,15 @@ async function handleAdminCommand(
             return true;
         }
 
-        const mentioned = getMentionedJid(msg);
+        const mentionedJids = getMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
         if (!mentioned) {
             await send(sock, jid, "⚠️ يرجى منشن العضو، مثال: .اشراف @user", msg);
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentioned).split("@")[0]);
+        const targetJid = buildSafeMention(mentioned) || `${target}@s.whatsapp.net`;
 
         let metadata = null;
         try {
@@ -517,7 +527,7 @@ async function handleAdminCommand(
         }
 
         const targetInGroup = metadata?.participants?.find((p) => {
-            const pid = cleanNumber(p.id);
+            const pid = cleanNumber(String(p.id).split("@")[0]);
             return pid === target || pid.endsWith(target) || target.endsWith(pid);
         });
 
@@ -525,7 +535,7 @@ async function handleAdminCommand(
             await send(sock, jid,
                 `⚠️ العضو @${target} غير موجود في هذه المجموعة.`,
                 msg,
-                { mentions: [mentioned] }
+                { mentions: [targetJid] }
             );
             return true;
         }
@@ -543,12 +553,12 @@ async function handleAdminCommand(
             await send(sock, jid,
                 `🛡️ تم تفعيل حماية إشراف العضو @${target}\n\n📌 أي محاولة لسحب إشرافه سيتم التعامل معها فورياً.`,
                 msg,
-                { mentions: [mentioned] }
+                { mentions: [targetJid] }
             );
         } else {
             db.monitoredUsers[jid] = monitored.filter((n) => n !== target);
             doSave();
-            await send(sock, jid, `✅ تم إلغاء حماية إشراف العضو @${target}.`, msg, { mentions: [mentioned] });
+            await send(sock, jid, `✅ تم إلغاء حماية إشراف العضو @${target}.`, msg, { mentions: [targetJid] });
         }
         return true;
     }
@@ -606,7 +616,7 @@ async function handleAdminCommand(
     }
 
     // ========================================================
-    // .طرف
+    // .طرف — ⭐ إصلاح المنشن
     // ========================================================
     if (command === "طرف") {
         if (!canUse("2")) {
@@ -614,13 +624,15 @@ async function handleAdminCommand(
             return true;
         }
 
-        const mentioned = getMentionedJid(msg);
+        const mentionedJids = getMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
         if (!mentioned) {
             await send(sock, jid, messages.admin.invalidUsage(".طرف", "@user [الطرف]"), msg);
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentioned).split("@")[0]);
+        const targetJid = buildSafeMention(mentioned) || `${target}@s.whatsapp.net`;
         const party = Array.isArray(parts) ? parts.slice(1).join(" ").trim() : "";
 
         if (!party) {
@@ -633,7 +645,7 @@ async function handleAdminCommand(
             await send(sock, jid,
                 `⚠️ العضو @${target} غير مسجل عبر .سجل. يرجى تسجيله أولاً.`,
                 msg,
-                { mentions: [mentioned] }
+                { mentions: [targetJid] }
             );
             return true;
         }
@@ -646,7 +658,7 @@ async function handleAdminCommand(
             return true;
         }
 
-        // ⭐ استخدام رقم صافي للمنشن
+        // ⭐ استمارة الوورك — بمنشن صحيح
         const workMessage = messages.admin.work.form(
             targetUser.nickname,
             party,
@@ -656,10 +668,13 @@ async function handleAdminCommand(
 
         await send(sock, jid, messages.admin.work.sending, msg);
 
+        // ⭐ استخدام أرقام نقية مع @s.whatsapp.net
+        const senderJid = buildSafeMention(sender) || `${userNumber}@s.whatsapp.net`;
+
         for (const workJid of workJids) {
             await sock.sendMessage(workJid, {
                 text: workMessage,
-                mentions: [`${userNumber}@s.whatsapp.net`, `${target}@s.whatsapp.net`]
+                mentions: [senderJid, targetJid]
             }).catch(() => {});
         }
 
@@ -668,7 +683,7 @@ async function handleAdminCommand(
     }
 
     // ========================================================
-    // .سحب @user [مبلغ] — سحب رصيد (ليس سحب مزاد)
+    // .سحب @user [مبلغ] — سحب رصيد
     // ========================================================
     if (command === "سحب" && parts[0] !== "مزاد") {
         if (!canUse("1")) {
@@ -676,13 +691,15 @@ async function handleAdminCommand(
             return true;
         }
 
-        const mentioned = getMentionedJid(msg);
+        const mentionedJids = getMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
         if (!mentioned) {
             await send(sock, jid, messages.admin.invalidUsage(".سحب", "@user [المبلغ]"), msg);
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentioned).split("@")[0]);
+        const targetJid = buildSafeMention(mentioned) || `${target}@s.whatsapp.net`;
         const rawAmount = parts?.[parts.length - 1];
         const amount = Number.parseInt(String(rawAmount || "").replace(/[,$]/g, ""), 10);
 
@@ -695,7 +712,7 @@ async function handleAdminCommand(
         const targetProfile = db.users[target];
 
         if (!targetProfile || !String(targetProfile.nickname || "").trim()) {
-            await send(sock, jid, messages.admin.balance.notRegistered(target), msg, { mentions: [mentioned] });
+            await send(sock, jid, messages.admin.balance.notRegistered(target), msg, { mentions: [targetJid] });
             return true;
         }
 
@@ -714,7 +731,7 @@ async function handleAdminCommand(
             targetProfile.balance
         );
 
-        await send(sock, jid, successMessage, msg, { mentions: [mentioned] });
+        await send(sock, jid, successMessage, msg, { mentions: [targetJid] });
 
         const bankMessage = messages.bank?.withdraw
             ? messages.bank.withdraw(targetProfile.nickname, amount, targetProfile.balance)
@@ -725,7 +742,7 @@ async function handleAdminCommand(
             if (!bankGroups[bankJid]) continue;
             await sock.sendMessage(bankJid, {
                 text: bankMessage,
-                mentions: [`${target}@s.whatsapp.net`]
+                mentions: [targetJid]
             }).catch(() => {});
         }
         return true;

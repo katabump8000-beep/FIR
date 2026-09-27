@@ -2,9 +2,13 @@
 // duel.js
 // ALJESAT BOT
 // أنظمة الكازينو: الروليت + الكريستال + اتبع حدسك
+// نسخة محدّثة: إصلاح فتح الشات + دعم LID + تفاعل ✅
 // ============================================================
 
 "use strict";
+
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention } = require("./bot");
 
 // ============================================================
 // الحالة النشطة
@@ -31,11 +35,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function safeSend(sock, jid, content, options = {}) {
     if (!sock || !jid) return Promise.resolve(null);
     return sock.sendMessage(jid, content, options).catch(() => null);
-}
-
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/\D/g, "");
 }
 
 function getUser(db, jid) {
@@ -156,10 +155,6 @@ function crystalGameBlocked() {
     return `*❉▬▬▬▬▬⚠️▬▬▬▬▬❉*\n   *عذرا هناك العاب أخرى تجري*\n*✥▬▬▬▬▬⛔▬▬▬▬▬✥*`;
 }
 
-// ============================================================
-// إعلانات الكريستال
-// ============================================================
-
 async function sendCrystalWinAd(sock, db, cleanSender, sender, amount) {
     if (!db.adsGroups || typeof db.adsGroups !== "object") return;
     const date = new Date();
@@ -207,10 +202,6 @@ async function sendCrystalLossAd(sock, db, cleanSender, sender, amount) {
     }
 }
 
-// ============================================================
-// دوران الكريستال
-// ============================================================
-
 async function spinCrystal(sock, jid, msgId, betAmount) {
     const rounds = 6;
     let finalCombo = null;
@@ -232,10 +223,6 @@ async function spinCrystal(sock, jid, msgId, betAmount) {
         } : { result: "retry" }
     };
 }
-
-// ============================================================
-// بدء الكريستال
-// ============================================================
 
 async function startCrystal(sock, jid, msg, cleanSender, sender, db, saveDb, isBotOwner, parts) {
     try {
@@ -260,13 +247,13 @@ async function startCrystal(sock, jid, msg, cleanSender, sender, db, saveDb, isB
         }
 
         if (!hasNickname(db, senderNumber)) {
-            await safeSend(sock, jid, { text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل لتتمكن من اللعب." }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ يجب أن يكون لديك لقب مسجل عبر .سجل." }, { quoted: msg });
             return false;
         }
 
         const betAmount = parseBet(parts);
         if (betAmount < MIN_BET) {
-            await safeSend(sock, jid, { text: `⚠️ يرجى تحديد مبلغ صحيح، مثل: .الكرستال 50 (الحد الأدنى: ${MIN_BET}$)` }, { quoted: msg });
+            await safeSend(sock, jid, { text: `⚠️ يرجى تحديد مبلغ صحيح، مثل: .الكرستال 50` }, { quoted: msg });
             return false;
         }
         if (betAmount > MAX_BET) {
@@ -285,7 +272,7 @@ async function startCrystal(sock, jid, msg, cleanSender, sender, db, saveDb, isB
         const playerElapsed = now - lastPlayerGame;
         if (lastPlayerGame > 0 && playerElapsed < CRYSTAL_PLAYER_COOLDOWN) {
             const remainingMin = Math.ceil((CRYSTAL_PLAYER_COOLDOWN - playerElapsed) / 60000);
-            await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق قبل بدء فعالية جديدة.` }, { quoted: msg });
+            await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق.` }, { quoted: msg });
             return false;
         }
 
@@ -316,7 +303,7 @@ async function startCrystal(sock, jid, msg, cleanSender, sender, db, saveDb, isB
         if (!sent || !sent.key) {
             user.balance += betAmount;
             saveDb();
-            await safeSend(sock, jid, { text: "❌ حدث خطأ في بدء اللعبة. تم إرجاع رهانك." }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ حدث خطأ في بدء اللعبة." }, { quoted: msg });
             return false;
         }
 
@@ -378,12 +365,12 @@ async function startRoulette(sock, jid, msg, cleanSender, sender, db, saveDb, is
     const lastRoulette = Number(db.rouletteCooldown[jid]) || 0;
     if (lastRoulette > 0 && (now - lastRoulette) < ROULETTE_COOLDOWN) {
         const remainingMin = Math.ceil((ROULETTE_COOLDOWN - (now - lastRoulette)) / 60000);
-        await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق قبل بدء فعالية روليت جديدة.` }, { quoted: msg });
+        await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق.` }, { quoted: msg });
         return false;
     }
 
     if (activeCasinos[jid] || activeGuessGames[jid]) {
-        await safeSend(sock, jid, { text: "⚠️ هناك فعالية كازينو قيد الإعداد أو قائمة بالفعل!" }, { quoted: msg });
+        await safeSend(sock, jid, { text: "⚠️ هناك فعالية قائمة بالفعل!" }, { quoted: msg });
         return false;
     }
 
@@ -424,15 +411,12 @@ async function startRoulette(sock, jid, msg, cleanSender, sender, db, saveDb, is
 
 مثال:
 ناغي كتب .رهان 100
-يجب أن يضع شخص آخر 100 أو أكثر بدون تجاوز الحد.
 
 بعد اكتمال الرهانات، يختار منشئ الفعالية:
 
 .بدأ الرهان ➜ تبدأ اللعبة.
 
 .انسحاب ➜ تلغى الفعالية.
-
-يمكن مشاركة أكثر من ${MAX_ROULETTE_PLAYERS} أشخاص.
 
 الفائز يحصل على مجموع كل الرهانات.
 
@@ -501,7 +485,15 @@ function createRouletteRunner(sock, jid, casino, db) {
 
             const winnerUser = ensureUser(db, winnerKey);
             winnerUser.balance = Number(winnerUser.balance || 0) + pool;
-            saveDb();
+            db.users = db.users || {};
+            db.users[winnerKey] = winnerUser;
+            if (typeof db.saveDb === "function") db.saveDb();
+            else {
+                try {
+                    const bot = require("./bot");
+                    bot.saveDb();
+                } catch (_) {}
+            }
 
             try { await sock.groupSettingUpdate(jid, "not_announcement"); } catch (_) {}
 
@@ -549,9 +541,13 @@ function createRouletteRunner(sock, jid, casino, db) {
                 await sock.sendMessage(adJid, { text: adMessage }).catch(() => {});
             }
 
-            db.rouletteCooldown = db.rouletteCooldown || {};
-            db.rouletteCooldown[jid] = Date.now();
-            saveDb();
+            try {
+                const bot = require("./bot");
+                bot.getDb().rouletteCooldown = bot.getDb().rouletteCooldown || {};
+                bot.getDb().rouletteCooldown[jid] = Date.now();
+                bot.saveDb();
+            } catch (_) {}
+
             delete activeCasinos[jid];
             return;
         }
@@ -624,7 +620,7 @@ async function handleRouletteStart(sock, jid, msg, senderNumber, owner, db) {
 
     const players = Object.keys(casino.bets || {});
     if (players.length < 3) {
-        await safeSend(sock, jid, { text: "⚠️ يجب أن يكون هناك 3 مشاركين على الأقل لبدء الفعالية." }, { quoted: msg });
+        await safeSend(sock, jid, { text: "⚠️ يجب أن يكون هناك 3 مشاركين على الأقل." }, { quoted: msg });
         return true;
     }
 
@@ -632,7 +628,7 @@ async function handleRouletteStart(sock, jid, msg, senderNumber, owner, db) {
         (Date.now() - Number(casino.startTime || 0)) > 5 * 60 * 1000;
 
     if (!canStart) {
-        await safeSend(sock, jid, { text: "⚠️ منشئ الروليت فقط يمكنه بدء الرهان، أو انتظر 5 دقائق." }, { quoted: msg });
+        await safeSend(sock, jid, { text: "⚠️ منشئ الروليت فقط يمكنه بدء الرهان." }, { quoted: msg });
         return true;
     }
 
@@ -640,7 +636,7 @@ async function handleRouletteStart(sock, jid, msg, senderNumber, owner, db) {
         const player = casino.bets[number];
         const user = getUser(db, number);
         if (!user || Number(user.balance || 0) < Number(player.amount || 0)) {
-            await safeSend(sock, jid, `⚠️ لا يمكن بدء الروليت لأن رصيد أحد المشاركين لم يعد كافياً: [${player.nickname}]`, msg);
+            await safeSend(sock, jid, `⚠️ لا يمكن بدء الروليت لأن رصيد [${player.nickname}] غير كافٍ.`, msg);
             return true;
         }
     }
@@ -653,7 +649,7 @@ async function handleRouletteStart(sock, jid, msg, senderNumber, owner, db) {
         const user = ensureUser(db, number);
         user.balance -= Number(player.amount);
     }
-    saveDb();
+    try { require("./bot").saveDb(); } catch (_) {}
 
     const playersMsg = await sock.sendMessage(jid, { text: buildRoulettePlayersList(casino) });
     casino.playersMsgId = playersMsg?.key || null;
@@ -683,7 +679,7 @@ function removeCasino(jid) {
 }
 
 // ============================================================
-// 🆕 لعبة اتبع حدسك
+// ⭐ لعبة اتبع حدسك — مع إصلاح فتح الشات وتفاعل ✅
 // ============================================================
 
 const GUESS_BALLS = ["🟢", "🟡", "🔵", "🟣", "🔴", "🟤", "🟠"];
@@ -723,15 +719,6 @@ function getGuessOpenMessage() {
 
 function getGuessChooseConfirm() {
     return "√ `تم تسجيل اختيارك` √";
-}
-
-function getGuessReminderMessage(userNumber) {
-    return `◆━─━─━─⊱⊰─━─━─━◆
-*العضو  :* @${userNumber} 
-رجاءا حدد كرة والا سيتم
- استبعادك من اللعبة  وخصم 
-رصيدك.  *امامك 30 ثانية*
-◆━─━─━─⊱⊰─━─━─━◆`;
 }
 
 function getGuessRemovedMessage(userNumber) {
@@ -818,7 +805,7 @@ async function handleGuessStart(sock, jid, msg, cleanSender, sender, db, saveDb,
         const lastGuess = Number(db.guessCooldown[jid]) || 0;
         if (lastGuess > 0 && (now - lastGuess) < GUESS_COOLDOWN) {
             const remainingMin = Math.ceil((GUESS_COOLDOWN - (now - lastGuess)) / 60000);
-            await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق قبل بدء فعالية جديدة.` }, { quoted: msg });
+            await safeSend(sock, jid, { text: `⏳ يرجى الانتظار ${remainingMin} دقائق.` }, { quoted: msg });
             return false;
         }
 
@@ -849,12 +836,17 @@ async function handleGuessStart(sock, jid, msg, cleanSender, sender, db, saveDb,
             startTime: Date.now(),
             lastActivity: Date.now(),
             isActive: true,
-            phase: "joining", // joining → choosing → waiting → ended
-            timers: { joinWait: null, chooseWait: null, reminder: null, result: null },
+            phase: "joining",
+            timers: { joinWait: null, chooseWait: null, reminder: null, autoStop: null },
+            listener: null,
             stopGame: function() {
                 this.isActive = false;
                 for (const t of Object.values(this.timers)) {
                     if (t) clearTimeout(t);
+                }
+                if (this.listener) {
+                    try { sock.ev.off("messages.upsert", this.listener); } catch (_) {}
+                    this.listener = null;
                 }
                 delete activeGuessGames[jid];
             }
@@ -871,14 +863,14 @@ async function handleGuessStart(sock, jid, msg, cleanSender, sender, db, saveDb,
             if (playerCount < 3) {
                 await safeSend(sock, jid, {
                     text: getGuessNeedThirdMessage(senderNumber),
-                    mentions: [sender]
+                    mentions: [buildSafeMention(sender) || `${senderNumber}@s.whatsapp.net`]
                 });
+
                 // إيقاف تلقائي بعد 75 ثانية
-                setTimeout(async () => {
+                gameState.timers.autoStop = setTimeout(async () => {
                     if (!gameState.isActive || gameState.started) return;
                     const pc = Object.keys(gameState.players).length;
                     if (pc < 3) {
-                        // إعادة الرصيد
                         for (const num of Object.keys(gameState.players)) {
                             const u = ensureUser(db, num);
                             u.balance = Number(u.balance || 0) + Number(gameState.players[num].amount || 0);
@@ -985,25 +977,29 @@ async function handleGuessRun(sock, jid, msg, senderNumber, owner, db, saveDb) {
         game.started = true;
         game.phase = "choosing";
         if (game.timers.joinWait) clearTimeout(game.timers.joinWait);
+        if (game.timers.autoStop) clearTimeout(game.timers.autoStop);
 
+        // ⭐ إغلاق الشات
         try { await sock.groupSettingUpdate(jid, "announcement"); } catch (_) {}
 
-        // اختيار الكرات — عددها = عدد المشاركين
+        // اختيار الكرات
         const shuffledBalls = [...GUESS_BALLS].sort(() => Math.random() - 0.5);
         const selectedBalls = shuffledBalls.slice(0, playerCount);
         game.ballsDisplayed = selectedBalls;
-
-        // الكرة الفائزة (عشوائي من الكرات المعروضة)
         game.winningBall = selectedBalls[Math.floor(Math.random() * selectedBalls.length)];
 
         await safeSend(sock, jid, { text: "`ايها المشاركين الحقو حدسكم:`" });
         await safeSend(sock, jid, { text: getGuessBallsDisplay(selectedBalls) });
         await safeSend(sock, jid, { text: getGuessChooseMessage() });
 
-        // بعد 20 ثانية: افتح الشات
+        // ⭐ بعد 20 ثانية: افتح الشات
         game.timers.chooseWait = setTimeout(async () => {
             if (!game.isActive) return;
             game.phase = "waiting";
+
+            // ⭐ فتح الشات
+            try { await sock.groupSettingUpdate(jid, "not_announcement"); } catch (_) {}
+
             await safeSend(sock, jid, { text: getGuessOpenMessage() });
 
             // مستمع للاختيارات
@@ -1016,28 +1012,45 @@ async function handleGuessRun(sock, jid, msg, senderNumber, owner, db, saveDb) {
                     if (incomingMsg.key?.remoteJid !== jid) return;
                     if (incomingMsg.key?.fromMe) return;
 
-                    const userSender = incomingMsg.key?.participant || incomingMsg.key?.remoteJid;
-                    const userNum = cleanNumber(userSender);
+                    // ⭐ دعم LID
+                    const userSender =
+                        incomingMsg.key?.participantPn ||
+                        incomingMsg.key?.participant_pn ||
+                        incomingMsg.key?.senderPn ||
+                        incomingMsg.key?.participant ||
+                        incomingMsg.key?.remoteJid;
+                    if (!userSender) return;
+
+                    const userNum = cleanNumber(String(userSender).split("@")[0]);
                     if (!game.players[userNum]) return;
                     if (game.guessedBalls[userNum]) return;
 
-                    const txt = getMessageText(incomingMsg.message);
+                    const txt = (incomingMsg.message?.conversation ||
+                                 incomingMsg.message?.extendedTextMessage?.text || "").trim();
                     if (!txt) return;
 
-                    // فحص إذا كانت الكرة صحيحة (من ضمن الكرات المعروضة)
+                    // ⭐ فحص إذا كانت الكرة صحيحة
                     const cleanedTxt = txt.trim();
                     if (game.ballsDisplayed.includes(cleanedTxt)) {
                         game.guessedBalls[userNum] = cleanedTxt;
                         game.lastActivity = Date.now();
-                        await safeSend(sock, jid, { text: getGuessChooseConfirm() }, { quoted: incomingMsg });
+
+                        // ⭐ تفاعل ✅ على رسالته
+                        try {
+                            await sock.sendMessage(jid, {
+                                react: { text: "✅", key: incomingMsg.key }
+                            });
+                        } catch (_) {}
 
                         // كل المشاركين اختاروا؟
                         const totalGuessed = Object.keys(game.guessedBalls).length;
                         const totalPlayers = Object.keys(game.players).length;
+
                         if (totalGuessed >= totalPlayers) {
                             if (game.timers.reminder) clearTimeout(game.timers.reminder);
                             if (game.timers.chooseWait) clearTimeout(game.timers.chooseWait);
-                            sock.ev.off("messages.upsert", listener);
+                            try { sock.ev.off("messages.upsert", listener); } catch (_) {}
+                            game.listener = null;
                             await finishGuessGame(sock, jid, db, saveDb, game);
                         }
                     }
@@ -1052,19 +1065,18 @@ async function handleGuessRun(sock, jid, msg, senderNumber, owner, db, saveDb) {
                 if (!game.isActive || game.finished) return;
                 const pending = Object.keys(game.players).filter(n => !game.guessedBalls[n]);
                 if (pending.length > 0) {
-                    // إزالة الذين لم يختاروا
                     for (const num of pending) {
                         await safeSend(sock, jid, {
                             text: getGuessRemovedMessage(num),
                             mentions: [`${num}@s.whatsapp.net`]
                         });
-                        // لا نرجع رصيده (يخصم)
                         delete game.players[num];
                     }
                 }
                 if (game.timers.chooseWait) clearTimeout(game.timers.chooseWait);
                 if (game.listener) {
                     try { sock.ev.off("messages.upsert", game.listener); } catch (_) {}
+                    game.listener = null;
                 }
                 if (!game.finished) await finishGuessGame(sock, jid, db, saveDb, game);
             }, 90 * 1000);
@@ -1085,7 +1097,10 @@ async function finishGuessGame(sock, jid, db, saveDb, game) {
 
     const winningBall = game.winningBall;
 
-    // أعلن الكرة الفائزة
+    // ⭐ إغلاق الشات
+    try { await sock.groupSettingUpdate(jid, "announcement"); } catch (_) {}
+
+    // أعلن الكرة الفائزة بعد 5 ثواني
     await sleep(5000);
     await safeSend(sock, jid, { text: getGuessResultMessage(winningBall) });
 
@@ -1159,7 +1174,7 @@ async function finishGuessGame(sock, jid, db, saveDb, game) {
         }
     }
 
-    // افتح الشات
+    // ⭐ فتح الشات مرة أخرى
     try { await sock.groupSettingUpdate(jid, "not_announcement"); } catch (_) {}
 
     game.stopGame();
@@ -1174,16 +1189,18 @@ function stopGuessGame(jid) {
     if (game) {
         try {
             // إعادة الرصيد
-            const db = require("./bot").getDb();
+            const bot = require("./bot");
+            const db = bot.getDb();
             if (db) {
                 for (const num of Object.keys(game.players || {})) {
                     const u = db.users?.[num];
                     if (u) u.balance = Number(u.balance || 0) + Number(game.players[num].amount || 0);
                 }
-                require("./bot").saveDb();
+                bot.saveDb();
             }
         } catch (_) {}
         game.stopGame();
+        try { require("./bot").getDb(); } catch (_) {}
         return true;
     }
     return false;

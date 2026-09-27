@@ -1,11 +1,13 @@
 // ============================================================
 // mzad.js
 // ALJESAT BOT
-// نظام المزاد - بيع وشراء القطع الأثرية
-// نسخة محدّثة: انهاء مزاد، سحب مزاد، مزاد @منشن
+// نظام المزاد - نسخة محدّثة بدعم LID
 // ============================================================
 
 "use strict";
+
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention, getRealMentionedJids } = require("./bot");
 
 // ============================================================
 // قائمة القطع الأثرية
@@ -89,7 +91,7 @@ const MAZAD_ITEMS = [
 ];
 
 // ============================================================
-// الحالة النشطة للمزاد
+// الحالة النشطة
 // ============================================================
 
 const activeMazads = Object.create(null);
@@ -97,11 +99,6 @@ const activeMazads = Object.create(null);
 // ============================================================
 // أدوات مساعدة
 // ============================================================
-
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/\D/g, "");
-}
 
 function getUser(db, jid) {
     if (!db || !db.users) return null;
@@ -136,13 +133,6 @@ function getRandomMazadItem() {
     return shuffled[0];
 }
 
-function getMentionedJid(msg) {
-    try {
-        return msg?.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
-            msg?.message?.contextInfo?.mentionedJid?.[0] || null;
-    } catch { return null; }
-}
-
 // ============================================================
 // رسائل المزاد
 // ============================================================
@@ -170,7 +160,6 @@ function getMazadInstructions() {
 *🎤▬▬▬▬▬▬▬▬▬▬▬▬🎤*`;
 }
 
-// ⭐ رسالة الفائز بالصيغة المطلوبة
 function getMazadWinnerNew(winnerNumber, item, amount) {
     return `*⌬━─⟐─ 🧾 ─⟐─━⌬*
 العضو @${winnerNumber}
@@ -239,14 +228,11 @@ function getSendNoItem() {
 async function handleMazadCommand(sock, jid, msg, db, saveDb, cleanSender, isBotOwner) {
     try {
         const creator = db.mazadCreator;
-
-        // فحص إذا كان ممنوع عبر الإمبراطور
         const isEmperor = db.emperors && db.emperors[cleanSender] === true;
         const hasMazadPerm = (creator && creator === cleanSender) || isEmperor;
 
-        // فحص صلاحية المستخدم
+        // فحص إذا كان ممنوع عبر الإمبراطور
         if (db.mazadRevoked === true && !isEmperor) {
-            // هل معطى له صلاحية خاصة؟
             const hasSpecialPerm = db.mazadPermitted && db.mazadPermitted[cleanSender] === true;
             if (!hasSpecialPerm) {
                 await safeSend(sock, jid, {
@@ -259,16 +245,12 @@ async function handleMazadCommand(sock, jid, msg, db, saveDb, cleanSender, isBot
         }
 
         if (!hasMazadPerm && !isBotOwner) {
-            await safeSend(sock, jid, {
-                text: "⚠️ ليس لديك صلاحية لبدء المزاد."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ ليس لديك صلاحية لبدء المزاد." }, { quoted: msg });
             return true;
         }
 
         if (activeMazads[jid]) {
-            await safeSend(sock, jid, {
-                text: "⚠️ هناك مزاد نشط بالفعل في هذه المجموعة!"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ هناك مزاد نشط بالفعل في هذه المجموعة!" }, { quoted: msg });
             return true;
         }
 
@@ -325,7 +307,7 @@ async function handleMazadCommand(sock, jid, msg, db, saveDb, cleanSender, isBot
 }
 
 // ============================================================
-// معالجة العروض
+// العروض
 // ============================================================
 
 async function handleMazadBid(sock, jid, msg, db, saveDb, cleanSender, amount) {
@@ -367,9 +349,17 @@ async function handleMazadBid(sock, jid, msg, db, saveDb, cleanSender, amount) {
         }
 
         const nickname = getUserNickname(db, cleanSender);
+        // ⭐ منشن صحيح
+        const bidderJid =
+            msg?.key?.participantPn ||
+            msg?.key?.participant_pn ||
+            msg?.key?.participant ||
+            msg?.key?.remoteJid;
+        const safeJid = buildSafeMention(bidderJid) || `${cleanSender}@s.whatsapp.net`;
+
         await safeSend(sock, jid, {
             text: `✅ تم تسجيل عرض ${amount}$ من [${nickname}] 🏆`,
-            mentions: [msg?.key?.participant || msg?.key?.remoteJid]
+            mentions: [safeJid]
         });
 
         return true;
@@ -411,13 +401,14 @@ async function endMazad(sock, jid, db, saveDb, mazadState) {
 
         if (typeof saveDb === "function") saveDb();
 
-        // ⭐ رسالة الفائز بالصيغة الجديدة
+        // ⭐ منشن صحيح للفائز
+        const winnerJid = buildSafeMention(winner) || `${winner}@s.whatsapp.net`;
+
         await safeSend(sock, jid, {
             text: getMazadWinnerNew(winner, item, amount),
-            mentions: [`${winner}@s.whatsapp.net`]
+            mentions: [winnerJid]
         });
 
-        // إعلان ADS باللقب
         const winnerUser = db.users?.[winner];
         const winnerNickname = (winnerUser && String(winnerUser.nickname || "").trim()) || winner;
 
@@ -453,7 +444,7 @@ async function endMazad(sock, jid, db, saveDb, mazadState) {
 }
 
 // ============================================================
-// 🆕 .انهاء مزاد — فقط الإمبراطور أو المالك
+// .انهاء مزاد
 // ============================================================
 
 async function handleEndMazad(sock, jid, msg, db, saveDb, cleanSender, isBotOwner) {
@@ -480,7 +471,7 @@ async function handleEndMazad(sock, jid, msg, db, saveDb, cleanSender, isBotOwne
 }
 
 // ============================================================
-// 🆕 .سحب مزاد — فقط الإمبراطور
+// .سحب مزاد
 // ============================================================
 
 async function handleRevokeMazadPerm(sock, jid, msg, db, saveDb, cleanSender, isBotOwner) {
@@ -511,10 +502,10 @@ async function handleRevokeMazadPerm(sock, jid, msg, db, saveDb, cleanSender, is
 }
 
 // ============================================================
-// 🆕 .مزاد @منشن — الإمبراطور يمنح شخص معين صلاحية
+// .مزاد @منشن — منح صلاحية
 // ============================================================
 
-async function handleGrantMazadToUser(sock, jid, msg, db, saveDb, cleanSender, isBotOwner, mentioned) {
+async function handleGrantMazadToUser(sock, jid, msg, db, saveDb, cleanSender, isBotOwner, mentionedJid) {
     try {
         const isEmperor = db.emperors && db.emperors[cleanSender] === true;
         if (!isBotOwner && !isEmperor) {
@@ -522,15 +513,17 @@ async function handleGrantMazadToUser(sock, jid, msg, db, saveDb, cleanSender, i
             return true;
         }
 
-        const target = cleanNumber(mentioned);
+        const target = cleanNumber(String(mentionedJid).split("@")[0]);
         if (!target) {
             await safeSend(sock, jid, { text: "⚠️ يرجى منشن الشخص." }, { quoted: msg });
             return true;
         }
 
+        const targetJid = buildSafeMention(mentionedJid) || `${target}@s.whatsapp.net`;
+
         db.mazadPermitted = db.mazadPermitted || {};
         db.mazadPermitted[target] = true;
-        db.mazadRevoked = true; // يبقى المنع لبقية الناس
+        db.mazadRevoked = true;
         if (typeof saveDb === "function") saveDb();
 
         const nickname = getUserNickname(db, target);
@@ -538,7 +531,7 @@ async function handleGrantMazadToUser(sock, jid, msg, db, saveDb, cleanSender, i
             text: `◆━─━─━─⊱✅⊰─━─━─━◆
 تم منح \`${nickname}\` صلاحية إنشاء المزاد
 ◆━─━─━─⊱🎤⊰─━─━─━◆`,
-            mentions: [mentioned]
+            mentions: [targetJid]
         }, { quoted: msg });
 
         return true;
@@ -566,7 +559,7 @@ async function handleMazadInventory(sock, jid, msg, db, cleanSender) {
 }
 
 // ============================================================
-// إرسال قطعة إلى شخص
+// إرسال قطعة
 // ============================================================
 
 async function handleMazadSend(sock, jid, msg, text, db, saveDb, cleanSender) {
@@ -628,9 +621,13 @@ async function handleMazadSend(sock, jid, msg, text, db, saveDb, cleanSender) {
 
                 if (typeof saveDb === "function") saveDb();
 
+                // ⭐ منشن صحيح للطرفين
+                const fromJid = buildSafeMention(cleanSender) || `${cleanSender}@s.whatsapp.net`;
+                const toJid = buildSafeMention(targetNumber) || `${targetNumber}@s.whatsapp.net`;
+
                 await safeSend(sock, jid, {
                     text: getSendSuccess(cleanSender, targetNumber, item),
-                    mentions: [`${cleanSender}@s.whatsapp.net`, `${targetNumber}@s.whatsapp.net`]
+                    mentions: [fromJid, toJid]
                 });
 
             } catch (error) {
@@ -645,10 +642,6 @@ async function handleMazadSend(sock, jid, msg, text, db, saveDb, cleanSender) {
         return false;
     }
 }
-
-// ============================================================
-// إلغاء طلب الإرسال
-// ============================================================
 
 async function handleMazadCancelSend(sock, jid, msg, db, saveDb, cleanSender) {
     try {
@@ -673,10 +666,6 @@ async function handleMazadCancelSend(sock, jid, msg, db, saveDb, cleanSender) {
 function checkMazadActive(jid) {
     return Boolean(activeMazads[jid] && activeMazads[jid].isActive);
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     activeMazads,

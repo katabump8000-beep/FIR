@@ -2,26 +2,30 @@
 // botIdentity.js
 // ALJESAT BOT
 // نظام هوية البوتات المتعددة
+// نسخة محدّثة: إصلاح .مؤبد + .اعفاء + استخراج المنشن من الرد
 // ============================================================
 
 "use strict";
 
+// ⭐ دوال LID
+const { cleanNumber, buildSafeMention, getRealMentionedJids } = require("./bot");
+
 // ============================================================
-// الحالة النشطة
+// الألقاب المتاحة للبوتات
 // ============================================================
 
-const botIdentities = Object.create(null);
-const monitoredWorks = Object.create(null);
-const permanentMembers = Object.create(null);
+const BOT_TITLES = {
+    "🩸": "بوت نوفا",
+    "❄": "بوت فورتكس",
+    "☘️": "بوت سولار",
+    "🔥": "بوت النار",
+    "⭐": "بوت النجم",
+    "🌙": "بوت القمر"
+};
 
 // ============================================================
 // أدوات مساعدة
 // ============================================================
-
-function cleanNumber(value) {
-    if (!value) return "";
-    return String(value).replace(/\D/g, "");
-}
 
 async function safeSend(sock, jid, content, options = {}) {
     if (!sock || !jid) return Promise.resolve(null);
@@ -40,21 +44,108 @@ function getMessageText(message) {
     ).trim();
 }
 
-// ============================================================
-// الألقاب المتاحة للبوتات
-// ============================================================
+/**
+ * ⭐ الحصول على الرسالة المقتبسة (quoted message)
+ */
+function getQuotedMessage(msg) {
+    try {
+        const ctx =
+            msg?.message?.extendedTextMessage?.contextInfo ||
+            msg?.message?.contextInfo ||
+            null;
+        if (!ctx) return null;
+        if (!ctx.quotedMessage) return null;
 
-const BOT_TITLES = {
-    "🩸": "بوت نوفا",
-    "❄": "بوت فورتكس",
-    "☘️": "بوت سولار",
-    "🔥": "بوت النار",
-    "⭐": "بوت النجم",
-    "🌙": "بوت القمر"
-};
+        return {
+            quotedMessage: ctx.quotedMessage,
+            stanzaId: ctx.stanzaId,
+            participant: ctx.participant,
+            mentionedJid: ctx.mentionedJid || [],
+            mentionedPn: ctx.mentionedPn || [],
+            participants: ctx.participants || []
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * ⭐ استخراج المذكور (mentioned) من الرسالة المقتبسة
+ * يدعم:
+ *   1. mentionedPn (الأفضل)
+ *   2. mentionedJid (إن كانت PN)
+ *   3. participants[].pn (تحويل LID → PN)
+ *   4. استخراج الرقم من النص @⁨...+...⁩
+ */
+function extractMentionFromQuoted(quoted) {
+    if (!quoted) return null;
+
+    // 1. الأولوية: mentionedPn
+    if (Array.isArray(quoted.mentionedPn) && quoted.mentionedPn[0]) {
+        return quoted.mentionedPn[0];
+    }
+
+    // 2. mentionedJid
+    const mentionedJids = Array.isArray(quoted.mentionedJid) ? quoted.mentionedJid : [];
+    for (const jid of mentionedJids) {
+        const s = String(jid);
+        if (s.endsWith("@s.whatsapp.net")) return s;
+    }
+
+    // 3. حاول إيجاد PN من participants
+    if (mentionedJids.length > 0 && Array.isArray(quoted.participants)) {
+        for (const jid of mentionedJids) {
+            const s = String(jid);
+            if (s.endsWith("@lid")) {
+                for (const p of quoted.participants) {
+                    if (p.lid === s && (p.pn || p.phoneNumber)) {
+                        return p.pn || p.phoneNumber;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. استخراج الرقم من نص الرسالة المقتبسة
+    // مثال: "_*المنشن*_: ┊ @⁨~rida @😎😎⁩ ┊"
+    const quotedText = getMessageText(quoted.quotedMessage) || "";
+    if (quotedText) {
+        // ابحث عن "المنشن" ثم أول @رقم أو @
+        const mentionSection = quotedText.split(/المنشن|الـمـنـشـن/)[1] || "";
+        if (mentionSection) {
+            // ابحث عن أرقام طويلة
+            const numMatch = mentionSection.match(/(\d{10,15})/);
+            if (numMatch) {
+                return `${numMatch[1]}@s.whatsapp.net`;
+            }
+        }
+    }
+
+    // 5. إذا وجدنا mentionedJid كـ LID فقط، أرجعه
+    if (mentionedJids.length > 0) {
+        return mentionedJids[0];
+    }
+
+    return null;
+}
+
+/**
+ * ⭐ استخراج لقب العضو من نص الاستمارة
+ */
+function extractNicknameFromQuoted(quoted) {
+    if (!quoted) return "مجهول";
+    const text = getMessageText(quoted.quotedMessage) || "";
+    if (!text) return "مجهول";
+
+    // ابحث عن "الـلــقـب" ثم القيمة بين ┊...┊
+    const match = text.match(/الـلــقـب[^\n]*?┊\s*([^┊\n]+?)\s*┊/);
+    if (match && match[1]) return match[1].trim();
+
+    return "مجهول";
+}
 
 // ============================================================
-// رسائل الهوية
+// رسائل
 // ============================================================
 
 function getIdentityConfirmMessage(botTitle) {
@@ -70,7 +161,7 @@ function getPermanentSaveMessage() {
 function getPermanentReleaseMessage() {
     return `◆━─━─━─⊱✅⊰─━─━─━◆
  تم فك حكم المؤبد عن هذا العضو
-◆━─━─━─⊱🟢⊰─━━─━─━◆`;
+◆━─━─━─⊱🟢⊰─━─━─━◆`;
 }
 
 function getPermanentBlockMessage() {
@@ -96,18 +187,16 @@ ${memberMention}
 }
 
 // ============================================================
-// معالجة أمر .انا بوت
+// .انا بوت
 // ============================================================
 
 async function handleBotIdentity(sock, jid, msg, db, saveDb, cleanSender, text) {
     try {
-        // استخراج الإيموجي من النص
         const match = text.match(/\.انا بوت\s+(.+)/);
         if (!match) return false;
 
         const emoji = match[1].trim();
-        
-        // البحث عن اللقب المناسب
+
         let botTitle = null;
         for (const [key, title] of Object.entries(BOT_TITLES)) {
             if (emoji.includes(key) || emoji === key) {
@@ -117,11 +206,9 @@ async function handleBotIdentity(sock, jid, msg, db, saveDb, cleanSender, text) 
         }
 
         if (!botTitle) {
-            // إذا لم يكن معروفاً، استخدم الإيموجي نفسه
             botTitle = `بوت ${emoji}`;
         }
 
-        // حفظ هوية البوت
         db.botIdentities = db.botIdentities || {};
         db.botIdentities[cleanSender] = {
             emoji: emoji,
@@ -144,51 +231,38 @@ async function handleBotIdentity(sock, jid, msg, db, saveDb, cleanSender, text) 
 }
 
 // ============================================================
-// معالجة أمر .حذف نقابتك
+// .حذف نقابتك
 // ============================================================
 
 async function handleDeleteNakaba(sock, jid, msg, db, saveDb, cleanSender, isBotOwner) {
     try {
-        // التحقق من الصلاحيات (إمبراطور أو مالك)
         const isEmperor = db.emperors && db.emperors[cleanSender] === true;
         if (!isBotOwner && !isEmperor) {
-            await safeSend(sock, jid, {
-                text: "⛔ هذا الأمر مخصص للإمبراطور فقط."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⛔ هذا الأمر مخصص للإمبراطور فقط." }, { quoted: msg });
             return true;
         }
 
-        // الحصول على المنشن
-        const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
-                         msg.message?.contextInfo?.mentionedJid?.[0];
+        const mentionedJids = getRealMentionedJids(msg);
+        const mentioned = mentionedJids[0] || null;
 
         if (!mentioned) {
-            await safeSend(sock, jid, {
-                text: "⚠️ يرجى منشن البوت.\nمثال: .حذف نقابتك @bot"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ يرجى منشن البوت.\nمثال: .حذف نقابتك @bot" }, { quoted: msg });
             return true;
         }
 
-        const targetNumber = cleanNumber(mentioned);
+        const targetNumber = cleanNumber(String(mentioned).split("@")[0]);
         const botData = db.botIdentities?.[targetNumber];
 
         if (!botData) {
-            await safeSend(sock, jid, {
-                text: "⚠️ هذا البوت ليس لديه هوية مسجلة."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ هذا البوت ليس لديه هوية مسجلة." }, { quoted: msg });
             return true;
         }
 
         const deletedName = botData.title;
-
-        // حذف الهوية
         delete db.botIdentities[targetNumber];
         if (typeof saveDb === "function") saveDb();
 
-        await safeSend(sock, jid, {
-            text: getNakabaDeleteMessage(deletedName)
-        }, { quoted: msg });
-
+        await safeSend(sock, jid, { text: getNakabaDeleteMessage(deletedName) }, { quoted: msg });
         return true;
 
     } catch (error) {
@@ -198,48 +272,46 @@ async function handleDeleteNakaba(sock, jid, msg, db, saveDb, cleanSender, isBot
 }
 
 // ============================================================
-// معالجة أمر .مؤبد (مع رد على استمارة الورك)
+// ⭐ .مؤبد — مع إصلاح استخراج المنشن من الرد
 // ============================================================
 
 async function handlePermanentMember(sock, jid, msg, db, saveDb, cleanSender) {
     try {
-        // الحصول على الرسالة المقتبسة
-        const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        if (!quotedMsg) {
+        // استخراج الرسالة المقتبسة
+        const quoted = getQuotedMessage(msg);
+
+        if (!quoted) {
             await safeSend(sock, jid, {
                 text: "⚠️ يجب أن ترد على استمارة الوورك."
             }, { quoted: msg });
             return true;
         }
 
-        const quotedText = getMessageText(quotedMsg);
-        
-        // البحث عن المنشن في الاستمارة
-        const mentionMatch = quotedText.match(/@(\d+)/);
-        if (!mentionMatch) {
+        // ⭐ استخراج المنشن بشكل موثوق
+        const targetJid = extractMentionFromQuoted(quoted);
+
+        if (!targetJid) {
             await safeSend(sock, jid, {
                 text: "⚠️ لم يتم العثور على منشن في الاستمارة."
             }, { quoted: msg });
             return true;
         }
 
-        const memberNumber = mentionMatch[1];
-        const memberNickname = quotedText.match(/الـلــقـب.*?┊\s*(.+?)\s*┊/)?.[1] || "مجهول";
+        const targetNumber = cleanNumber(String(targetJid).split("@")[0]);
+        const memberNickname = extractNicknameFromQuoted(quoted);
 
         // حفظ العضو كمؤبد
         db.permanentMembers = db.permanentMembers || {};
-        db.permanentMembers[memberNumber] = {
+        db.permanentMembers[targetNumber] = {
             nickname: memberNickname,
             savedAt: Date.now(),
-            savedBy: cleanSender
+            savedBy: cleanSender,
+            sourceJid: targetJid
         };
 
         if (typeof saveDb === "function") saveDb();
 
-        await safeSend(sock, jid, {
-            text: getPermanentSaveMessage()
-        }, { quoted: msg });
-
+        await safeSend(sock, jid, { text: getPermanentSaveMessage() }, { quoted: msg });
         return true;
 
     } catch (error) {
@@ -249,49 +321,42 @@ async function handlePermanentMember(sock, jid, msg, db, saveDb, cleanSender) {
 }
 
 // ============================================================
-// معالجة أمر .اعفاء
+// ⭐ .اعفاء — مع إصلاح استخراج المنشن
 // ============================================================
 
 async function handlePermanentRelease(sock, jid, msg, db, saveDb, cleanSender) {
     try {
-        // الحصول على الرسالة المقتبسة
-        const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        if (!quotedMsg) {
+        const quoted = getQuotedMessage(msg);
+
+        if (!quoted) {
             await safeSend(sock, jid, {
                 text: "⚠️ يجب أن ترد على استمارة الوورك."
             }, { quoted: msg });
             return true;
         }
 
-        const quotedText = getMessageText(quotedMsg);
-        
-        // البحث عن المنشن في الاستمارة
-        const mentionMatch = quotedText.match(/@(\d+)/);
-        if (!mentionMatch) {
+        const targetJid = extractMentionFromQuoted(quoted);
+
+        if (!targetJid) {
             await safeSend(sock, jid, {
                 text: "⚠️ لم يتم العثور على منشن في الاستمارة."
             }, { quoted: msg });
             return true;
         }
 
-        const memberNumber = mentionMatch[1];
+        const targetNumber = cleanNumber(String(targetJid).split("@")[0]);
 
-        // التحقق من وجوده
-        if (!db.permanentMembers?.[memberNumber]) {
+        if (!db.permanentMembers?.[targetNumber]) {
             await safeSend(sock, jid, {
                 text: "⚠️ هذا العضو ليس محفوظاً كمؤبد."
             }, { quoted: msg });
             return true;
         }
 
-        // حذف الحكم المؤبد
-        delete db.permanentMembers[memberNumber];
+        delete db.permanentMembers[targetNumber];
         if (typeof saveDb === "function") saveDb();
 
-        await safeSend(sock, jid, {
-            text: getPermanentReleaseMessage()
-        }, { quoted: msg });
-
+        await safeSend(sock, jid, { text: getPermanentReleaseMessage() }, { quoted: msg });
         return true;
 
     } catch (error) {
@@ -310,37 +375,40 @@ function isPermanentMember(db, userNumber) {
 }
 
 // ============================================================
-// معالجة استمارة الورك المرصودة
+// ⭐ كشف استمارة الوورك المرصودة + تنبيه الإدارة
 // ============================================================
 
 async function handleWorkFormDetection(sock, jid, msg, db, saveDb) {
     try {
         const text = getMessageText(msg.message);
-        
-        // التحقق من أنها استمارة وورك
-        if (!text.includes("إستمارة الوورك") && !text.includes("استمارة الوورك")) {
+        if (!text.includes("إستمارة الوورك") && !text.includes("استمارة الوورك") && !text.includes("الوورك")) {
             return false;
         }
 
-        // البحث عن المنشن واللقب
-        const mentionMatch = text.match(/@(\d+)/);
-        const nicknameMatch = text.match(/الـلــقـب.*?┊\s*(.+?)\s*┊/);
+        // حاول استخراج المنشن واللقب
+        const quoted = {
+            quotedMessage: msg.message,
+            mentionedJid: msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [],
+            mentionedPn: msg.message?.extendedTextMessage?.contextInfo?.mentionedPn || [],
+            participants: msg.message?.extendedTextMessage?.contextInfo?.participants || []
+        };
 
-        if (!mentionMatch) return false;
+        const targetJid = extractMentionFromQuoted(quoted);
+        const memberNickname = extractNicknameFromQuoted(quoted);
 
-        const memberNumber = mentionMatch[1];
-        const memberNickname = nicknameMatch?.[1] || "مجهول";
+        if (!targetJid) return false;
+
+        const targetNumber = cleanNumber(String(targetJid).split("@")[0]);
 
         // حفظ معلومات الاستمارة
         db.workForms = db.workForms || {};
-        db.workForms[memberNumber] = {
+        db.workForms[targetNumber] = {
             nickname: memberNickname,
             detectedAt: Date.now(),
             detectedIn: jid
         };
 
         if (typeof saveDb === "function") saveDb();
-
         return true;
 
     } catch (error) {
@@ -350,12 +418,11 @@ async function handleWorkFormDetection(sock, jid, msg, db, saveDb) {
 }
 
 // ============================================================
-// معالجة أمر .تعدد
+// .تعدد on/off
 // ============================================================
 
 async function handleTaadudCommand(sock, jid, msg, parts, cleanSender, owner, db, saveDb) {
     try {
-        // التحقق من أن القروب هو قروب العمل
         const workGroups = db.workGroups || {};
         if (!workGroups[jid]) {
             await safeSend(sock, jid, {
@@ -365,25 +432,18 @@ async function handleTaadudCommand(sock, jid, msg, parts, cleanSender, owner, db
         }
 
         const action = String(parts[0] || "").toLowerCase();
-
         db.taadudEnabled = db.taadudEnabled || {};
 
         if (action === "on") {
             db.taadudEnabled[jid] = true;
             if (typeof saveDb === "function") saveDb();
-            await safeSend(sock, jid, {
-                text: "✅ تم تفعيل نظام تعدد البوتات."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "✅ تم تفعيل نظام تعدد البوتات." }, { quoted: msg });
         } else if (action === "off") {
             delete db.taadudEnabled[jid];
             if (typeof saveDb === "function") saveDb();
-            await safeSend(sock, jid, {
-                text: "❌ تم إيقاف نظام تعدد البوتات."
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "❌ تم إيقاف نظام تعدد البوتات." }, { quoted: msg });
         } else {
-            await safeSend(sock, jid, {
-                text: "⚠️ الاستخدام: .تعدد on/off"
-            }, { quoted: msg });
+            await safeSend(sock, jid, { text: "⚠️ الاستخدام: .تعدد on/off" }, { quoted: msg });
         }
 
         return true;
@@ -395,27 +455,26 @@ async function handleTaadudCommand(sock, jid, msg, parts, cleanSender, owner, db
 }
 
 // ============================================================
-// إرسال تنبيه للأدمن عند دخول عضو مؤبد
+// فحص انضمام عضو مؤبد
 // ============================================================
 
 async function checkPermanentMemberJoin(sock, jid, memberNumber, db, saveDb) {
     try {
         const cleanNum = cleanNumber(memberNumber);
 
-        // التحقق من كونه مؤبد
         if (!isPermanentMember(db, cleanNum)) {
             return false;
         }
 
-        // إرسال رسالة الطرد
+        const safeJid = buildSafeMention(memberNumber) || `${cleanNum}@s.whatsapp.net`;
+
         await safeSend(sock, jid, {
             text: getPermanentBlockMessage(),
-            mentions: [`${cleanNum}@s.whatsapp.net`]
+            mentions: [safeJid]
         });
 
-        // طرد العضو
         try {
-            await sock.groupParticipantsUpdate(jid, [`${cleanNum}@s.whatsapp.net`], "remove");
+            await sock.groupParticipantsUpdate(jid, [safeJid], "remove");
         } catch (_) {}
 
         return true;
@@ -427,15 +486,17 @@ async function checkPermanentMemberJoin(sock, jid, memberNumber, db, saveDb) {
 }
 
 // ============================================================
-// إرسال تنبيه للأدمن عن عضو من نقابة أخرى
+// ⭐ تنبيه الإدارة عن عضو من نقابة أخرى
 // ============================================================
 
 async function alertAdminsAboutMember(sock, jid, memberNumber, nakabaName, db) {
     try {
-        const cleanNum = cleanNumber(memberNumber);
-        const memberMention = `@${cleanNum}`;
+        const cleanNum = cleanNumber(String(memberNumber).split("@")[0]);
+        if (!cleanNum) return false;
 
-        // البحث عن الأدمن الذين لديهم صلاحية .سجل
+        const memberJid = buildSafeMention(memberNumber) || `${cleanNum}@s.whatsapp.net`;
+
+        // الأدمن الذين لديهم صلاحية .سجل (2)
         const permissions = db.permissions || {};
         const adminNumbers = [];
 
@@ -443,18 +504,16 @@ async function alertAdminsAboutMember(sock, jid, memberNumber, nakabaName, db) {
             adminNumbers.push(...permissions["2"]);
         }
 
-        if (adminNumbers.length === 0) return;
+        if (adminNumbers.length === 0) return false;
 
-        // إرسال التنبيه لكل أدمن
         for (const adminNum of adminNumbers) {
+            const adminJid = buildSafeMention(adminNum) || `${cleanNumber(adminNum)}@s.whatsapp.net`;
             const adminMention = `@${cleanNumber(adminNum)}`;
-            
+            const memberMention = `@${cleanNum}`;
+
             await safeSend(sock, jid, {
                 text: getNakabaAlertMessage(adminMention, memberMention, nakabaName),
-                mentions: [
-                    `${cleanNumber(adminNum)}@s.whatsapp.net`,
-                    `${cleanNum}@s.whatsapp.net`
-                ]
+                mentions: [adminJid, memberJid]
             });
         }
 
@@ -465,10 +524,6 @@ async function alertAdminsAboutMember(sock, jid, memberNumber, nakabaName, db) {
         return false;
     }
 }
-
-// ============================================================
-// تصدير
-// ============================================================
 
 module.exports = {
     BOT_TITLES,
@@ -486,5 +541,8 @@ module.exports = {
     getPermanentReleaseMessage,
     getPermanentBlockMessage,
     getNakabaDeleteMessage,
-    getNakabaAlertMessage
+    getNakabaAlertMessage,
+    extractMentionFromQuoted,
+    extractNicknameFromQuoted,
+    getQuotedMessage
 };
